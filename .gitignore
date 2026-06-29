@@ -1,0 +1,16 @@
+node_modules/
+dist/
+.serena/
+.venv/
+__pycache__/
+*.pyc
+.env
+.env.*
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.local
+dev-server*.log
+backend-server*.log
+tmp/

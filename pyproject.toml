@@ -1,0 +1,18 @@
+[project]
+name = "portfolio-risk-analysis-backend"
+version = "0.1.0"
+description = "Local FastAPI backend for the portfolio and risk analysis prototype."
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115.0",
+  "uvicorn[standard]>=0.30.0",
+  "yfinance>=0.2.50",
+  "pandas>=2.2.0",
+  "numpy>=2.0.0",
+  "scipy>=1.14.0",
+  "httpx>=0.27.0",
+  "reportlab>=4.2.0",
+]
+
+[tool.uv]
+package = false
