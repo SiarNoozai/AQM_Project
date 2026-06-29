@@ -14,3 +14,4 @@ pnpm-debug.log*
 dev-server*.log
 backend-server*.log
 tmp/
+.venv/
