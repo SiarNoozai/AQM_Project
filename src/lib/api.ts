@@ -6,6 +6,27 @@ export type ApiAsset = {
   lastPrice: number;
 };
 
+export type ApiAssetAllocation = {
+  bySecurity: Record<string, number>;
+  byAssetClass: Record<string, number>;
+  bySector: Record<string, number>;
+  byRegion: Record<string, number>;
+};
+
+export type ApiRiskFinding = {
+  type:
+    | "concentration"
+    | "correlation"
+    | "diversification"
+    | "volatility"
+    | "risk_return"
+    | "allocation"
+    | "behavioral";
+  severity: "low" | "medium" | "high";
+  message: string;
+  affectedAssets: string[];
+};
+
 export type ApiMetrics = {
   expectedReturn: number;
   volatility: number;
@@ -36,6 +57,8 @@ export type ApiAnalysis = {
   metrics: ApiMetrics;
   optimizedMetrics: ApiMetrics;
   optimizedWeights: number[];
+  assetAllocation: ApiAssetAllocation;
+  riskFindings: ApiRiskFinding[];
   correlationMatrix: {
     tickers: string[];
     values: number[][];

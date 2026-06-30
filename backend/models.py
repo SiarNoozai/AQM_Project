@@ -61,6 +61,24 @@ class AssetResult(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
+class AssetAllocation(BaseModel):
+    by_security: dict[str, float] = Field(alias="bySecurity")
+    by_asset_class: dict[str, float] = Field(alias="byAssetClass")
+    by_sector: dict[str, float] = Field(alias="bySector")
+    by_region: dict[str, float] = Field(alias="byRegion")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class RiskFinding(BaseModel):
+    type: Literal["concentration", "correlation", "diversification", "volatility", "risk_return", "allocation", "behavioral"]
+    severity: Literal["low", "medium", "high"]
+    message: str
+    affected_assets: list[str] = Field(default_factory=list, alias="affectedAssets")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
 class FrontierPoint(BaseModel):
     id: int
     risk: float
@@ -92,6 +110,8 @@ class AnalysisResponse(BaseModel):
     metrics: PortfolioMetrics
     optimized_metrics: PortfolioMetrics = Field(alias="optimizedMetrics")
     optimized_weights: list[float] = Field(alias="optimizedWeights")
+    asset_allocation: AssetAllocation = Field(alias="assetAllocation")
+    risk_findings: list[RiskFinding] = Field(alias="riskFindings")
     correlation_matrix: CorrelationMatrix = Field(alias="correlationMatrix")
     covariance_matrix: list[list[float]] = Field(alias="covarianceMatrix")
     performance: list[dict[str, float | str]]
