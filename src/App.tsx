@@ -4,14 +4,18 @@ import {
   Activity,
   AlertTriangle,
   BrainCircuit,
+  CheckCircle2,
   Database,
   Download,
   FileText,
+  FolderOpen,
+  HelpCircle,
   LineChart as LineChartIcon,
   Menu,
-  MoreVertical,
   RefreshCw,
+  Save,
   ShieldCheck,
+  Trash2,
   TrendingUp,
 } from "lucide-react";
 import {
@@ -106,6 +110,7 @@ function App() {
   const [savedPortfolios, setSavedPortfolios] = useState<SavedPortfolio[]>(() => loadSavedPortfolios());
   const [portfolioName, setPortfolioName] = useState("MVP Portfolio");
   const [selectedPortfolioId, setSelectedPortfolioId] = useState("");
+  const [storageMessage, setStorageMessage] = useState("Noch kein Portfolio gespeichert");
   const [question, setQuestion] = useState("");
   const [questionAnswer, setQuestionAnswer] = useState<string | null>(null);
   const [isAsking, setIsAsking] = useState(false);
@@ -166,7 +171,7 @@ function App() {
   const visibleRiskFindings = getVisibleRiskFindings(activeRiskFindings);
   const visibleStrategies = analysis?.strategies ?? [];
   const visibleRiskAssets = [...displayAssets]
-    .sort((left, right) => (right.riskContribution?.percentContribution ?? 0) - (left.riskContribution?.percentContribution ?? 0))
+    .sort((left, right) => getRiskContributionPercent(right) - getRiskContributionPercent(left))
     .slice(0, 3);
   const recommendationSource = recommendation?.source ?? analysis?.recommendationSource ?? "rules";
   const isLive = Boolean(analysis);
@@ -175,6 +180,7 @@ function App() {
   function updateAsset(index: number, key: keyof AssetInput, value: string | number) {
     setAnalysis(null);
     setRecommendation(null);
+    setQuestionAnswer(null);
     setAssets((currentAssets) =>
       currentAssets.map((asset, assetIndex) =>
         assetIndex === index
@@ -198,6 +204,7 @@ function App() {
     const records = savePortfolioRecord(savedPortfolios, portfolioName, assets, analysis);
     setSavedPortfolios(records);
     setSelectedPortfolioId(records[0]?.id ?? "");
+    setStorageMessage(`Gespeichert: ${records[0]?.name ?? portfolioName}`);
   }
 
   function handleLoadPortfolio() {
@@ -208,19 +215,24 @@ function App() {
     setRecommendation(null);
     setPortfolioName(record.name);
     setError(null);
+    setQuestionAnswer(null);
+    setStorageMessage(`Geladen: ${record.name}`);
   }
 
   function handleDeletePortfolio() {
     if (!selectedPortfolioId) return;
+    const deleted = savedPortfolios.find((item) => item.id === selectedPortfolioId);
     const records = deletePortfolioRecord(savedPortfolios, selectedPortfolioId);
     setSavedPortfolios(records);
     setSelectedPortfolioId(records[0]?.id ?? "");
+    setStorageMessage(deleted ? `Geloescht: ${deleted.name}` : "Portfolio geloescht");
   }
 
   async function handleAnalyze() {
     setIsLoading(true);
     setError(null);
     setRecommendation(null);
+    setQuestionAnswer(null);
 
     try {
       const nextAnalysis = await analyzePortfolio({
@@ -323,7 +335,7 @@ function App() {
 
           <button className="toolbar-button primary" type="button" onClick={handleAnalyze} disabled={isLoading}>
             {isLoading ? <RefreshCw className="spinning" size={16} /> : <Database size={16} />}
-            {isLoading ? "Aktualisiere" : "Daten aktualisieren"}
+            {isLoading ? "Laedt Daten" : "Analyse starten"}
           </button>
 
           <button
@@ -346,9 +358,10 @@ function App() {
             {isExporting === "pdf" ? "PDF..." : "PDF"}
           </button>
 
-          <button className="icon-button" type="button" aria-label="Mehr Optionen">
-            <MoreVertical size={19} />
-          </button>
+          <div className={`data-status-pill ${isLive ? "live" : "demo"}`}>
+            <span />
+            {isLive ? "Live" : "Demo"}
+          </div>
         </div>
       </header>
 
@@ -423,9 +436,11 @@ function App() {
             />
             <div className="storage-actions">
               <button type="button" onClick={handleSavePortfolio}>
+                <Save size={13} />
                 Speichern
               </button>
               <button type="button" onClick={handleLoadPortfolio} disabled={!selectedPortfolioId}>
+                <FolderOpen size={13} />
                 Laden
               </button>
             </div>
@@ -443,9 +458,11 @@ function App() {
                 ))}
               </select>
               <button type="button" onClick={handleDeletePortfolio} disabled={!selectedPortfolioId}>
+                <Trash2 size={13} />
                 Loeschen
               </button>
             </div>
+            <p className="storage-feedback">{storageMessage}</p>
           </section>
 
           <button className="sidebar-primary" type="button" onClick={handleAnalyze} disabled={isLoading}>
@@ -453,16 +470,16 @@ function App() {
             Portfolio aktualisieren
           </button>
 
-          <div className="currency-row">
-            <span>Waehrung</span>
-            <select value="USD" disabled>
-              <option>USD</option>
-            </select>
-          </div>
         </aside>
 
         <main className="analysis-board">
           {error ? <div className="notice error">{error}</div> : null}
+          {isLoading ? (
+            <div className="notice loading">
+              <RefreshCw className="spinning" size={14} />
+              Kursdaten werden geladen und Kennzahlen berechnet.
+            </div>
+          ) : null}
 
           <section className="kpi-row" aria-label="Portfolio Kennzahlen">
             <MetricCard
@@ -509,6 +526,7 @@ function App() {
               ))}
             </div>
             <div className="chart-frame performance-chart">
+              {isLoading ? <div className="chart-skeleton" aria-hidden="true" /> : null}
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={activePerformance} margin={{ top: 10, right: 18, left: 2, bottom: 0 }}>
                   <CartesianGrid stroke="#e5eaf0" strokeDasharray="4 4" />
@@ -652,17 +670,21 @@ function App() {
               <h3>Risikobeitraege</h3>
               {visibleRiskAssets.map((asset) => (
                 <p key={asset.ticker}>
-                  <strong>{asset.ticker}</strong> {formatPercent(asset.riskContribution?.percentContribution ?? 0)}
+                  <strong>{asset.ticker}</strong> {formatPercent(getRiskContributionPercent(asset))}
                 </p>
               ))}
             </article>
             <article>
               <h3>Strategien</h3>
-              {visibleStrategies.slice(0, 2).map((strategy) => (
-                <p key={strategy.id}>
-                  <strong>{strategy.name}</strong> Sharpe {strategy.metrics.sharpeRatio.toFixed(2)}
-                </p>
-              ))}
+              {visibleStrategies.length ? (
+                visibleStrategies.slice(0, 2).map((strategy) => (
+                  <p key={strategy.id}>
+                    <strong>{strategy.name}</strong> Sharpe {strategy.metrics.sharpeRatio.toFixed(2)}
+                  </p>
+                ))
+              ) : (
+                <p>Nach Live-Analyse sichtbar</p>
+              )}
             </article>
           </section>
         </main>
@@ -692,7 +714,7 @@ function App() {
 
           <section className="ai-recommendations">
             <h3>Empfehlungen</h3>
-            {activeRecommendations.slice(0, 3).map((item, index) => (
+            {activeRecommendations.slice(0, 2).map((item, index) => (
               <article className="recommendation-card" key={`${item}-${index}`}>
                 <span className={`recommendation-icon tone-${index + 1}`}>
                   {index === 0 ? <TrendingUp size={18} /> : index === 1 ? <ShieldCheck size={18} /> : <Activity size={18} />}
@@ -707,7 +729,7 @@ function App() {
 
           <section className="report-section">
             <h3>Bericht</h3>
-            {activeReport.slice(0, 3).map((section) => (
+            {activeReport.slice(0, 1).map((section) => (
               <article key={section.title}>
                 <strong>{section.title}</strong>
                 <p>{section.content}</p>
@@ -727,6 +749,13 @@ function App() {
 
           <section className="question-box">
             <h3>Rueckfrage</h3>
+            <div className="quick-question-row" aria-label="Beispiel Rueckfragen">
+              {["Was bedeutet der VaR?", "Wer treibt das Risiko?", "Wie diversifiziert ist das Portfolio?"].map((item) => (
+                <button type="button" key={item} onClick={() => setQuestion(item)} disabled={!analysis}>
+                  {item}
+                </button>
+              ))}
+            </div>
             <textarea
               aria-label="Rueckfrage zum Portfolio"
               placeholder="z. B. Was bedeutet der VaR?"
@@ -734,9 +763,19 @@ function App() {
               onChange={(event) => setQuestion(event.target.value)}
             />
             <button type="button" onClick={handleAskQuestion} disabled={!analysis || isAsking}>
-              {isAsking ? "Antwort..." : "Fragen"}
+              {isAsking ? <RefreshCw className="spinning" size={13} /> : <HelpCircle size={13} />}
+              {isAsking ? "Antwort wird erstellt" : "Rueckfrage senden"}
             </button>
-            {questionAnswer ? <p>{questionAnswer}</p> : null}
+            {questionAnswer ? (
+              <p className="question-answer">
+                <CheckCircle2 size={13} />
+                {questionAnswer}
+              </p>
+            ) : (
+              <p className="question-hint">
+                {analysis ? "Antworten nutzen nur die aktuelle Analyse." : "Erst eine Live-Analyse starten."}
+              </p>
+            )}
           </section>
 
           <footer className="ai-footer">
@@ -895,6 +934,13 @@ function getVisibleRiskFindings(findings: ApiRiskFinding[]) {
   const behavioral = findings.find((finding) => finding.type === "behavioral");
   const primary = findings.find((finding) => finding.type !== "behavioral");
   return [primary, behavioral].filter((finding): finding is ApiRiskFinding => Boolean(finding)).slice(0, 2);
+}
+
+function getRiskContributionPercent(asset: DisplayAsset) {
+  if (asset.riskContribution) {
+    return asset.riskContribution.percentContribution;
+  }
+  return toDecimalWeight(asset.weight);
 }
 
 function buildDemoReport(
