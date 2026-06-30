@@ -4,6 +4,15 @@ export type ApiAsset = {
   expectedReturn: number;
   volatility: number;
   lastPrice: number;
+  assetClass: string;
+  sector: string;
+  region: string;
+  metadataStatus: "known" | "inferred" | "unknown";
+  riskContribution: {
+    volatilityContribution: number;
+    percentContribution: number;
+    method: string;
+  };
 };
 
 export type ApiAssetAllocation = {
@@ -44,6 +53,21 @@ export type ApiFrontierPoint = {
   kind: "simulation" | "current" | "optimized";
 };
 
+export type ApiStrategy = {
+  id: "low_volatility" | "diversified" | "return_oriented" | "max_sharpe";
+  name: string;
+  description: string;
+  weights: number[];
+  metrics: ApiMetrics;
+  weightDelta: number[];
+  diversificationNote: string;
+};
+
+export type ApiReportSection = {
+  title: string;
+  content: string;
+};
+
 export type ApiAnalysis = {
   mode: "live";
   dataSource: string;
@@ -59,6 +83,7 @@ export type ApiAnalysis = {
   optimizedWeights: number[];
   assetAllocation: ApiAssetAllocation;
   riskFindings: ApiRiskFinding[];
+  strategies: ApiStrategy[];
   correlationMatrix: {
     tickers: string[];
     values: number[][];
@@ -83,6 +108,14 @@ export type AnalyzePayload = {
 
 export type RecommendationResult = {
   recommendations: string[];
+  report: ApiReportSection[];
+  source: "ollama" | "rules";
+  model: string;
+  disclaimer: string;
+};
+
+export type AskResult = {
+  answer: string;
   source: "ollama" | "rules";
   model: string;
   disclaimer: string;
@@ -96,6 +129,10 @@ export async function analyzePortfolio(payload: AnalyzePayload) {
 
 export async function recommendPortfolio(analysis: ApiAnalysis) {
   return postJson<RecommendationResult>("/api/recommend", { analysis });
+}
+
+export async function askPortfolioQuestion(analysis: ApiAnalysis, question: string) {
+  return postJson<AskResult>("/api/ask", { analysis, question });
 }
 
 export async function downloadExport(kind: "csv" | "pdf", analysis: ApiAnalysis, recommendations: string[]) {

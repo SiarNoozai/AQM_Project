@@ -28,9 +28,10 @@ def create_csv_export(analysis: dict[str, Any], recommendations: list[str] | Non
     writer.writerow(["Value at Risk", metrics.get("valueAtRisk", ""), optimized.get("valueAtRisk", "")])
     writer.writerow([])
 
-    writer.writerow(["Asset", "Aktuelles Gewicht", "Optimiertes Gewicht", "Rendite", "Volatilitaet"])
+    writer.writerow(["Asset", "Aktuelles Gewicht", "Optimiertes Gewicht", "Rendite", "Volatilitaet", "Risikobeitrag", "Assetklasse", "Sektor", "Region"])
     optimized_weights = analysis.get("optimizedWeights", [])
     for index, asset in enumerate(analysis.get("assets", [])):
+        risk = asset.get("riskContribution", {}) if isinstance(asset, dict) else {}
         writer.writerow(
             [
                 asset.get("ticker", ""),
@@ -38,6 +39,25 @@ def create_csv_export(analysis: dict[str, Any], recommendations: list[str] | Non
                 optimized_weights[index] if index < len(optimized_weights) else "",
                 asset.get("expectedReturn", ""),
                 asset.get("volatility", ""),
+                risk.get("percentContribution", ""),
+                asset.get("assetClass", ""),
+                asset.get("sector", ""),
+                asset.get("region", ""),
+            ]
+        )
+    writer.writerow([])
+
+    writer.writerow(["Strategie", "Rendite", "Volatilitaet", "Sharpe Ratio", "Value at Risk", "Hinweis"])
+    for strategy in analysis.get("strategies", []):
+        strategy_metrics = strategy.get("metrics", {})
+        writer.writerow(
+            [
+                strategy.get("name", ""),
+                strategy_metrics.get("expectedReturn", ""),
+                strategy_metrics.get("volatility", ""),
+                strategy_metrics.get("sharpeRatio", ""),
+                strategy_metrics.get("valueAtRisk", ""),
+                strategy.get("diversificationNote", ""),
             ]
         )
     writer.writerow([])
@@ -79,8 +99,9 @@ def create_pdf_export(analysis: dict[str, Any], recommendations: list[str] | Non
     story.append(Spacer(1, 14))
 
     optimized_weights = analysis.get("optimizedWeights", [])
-    asset_rows = [["Asset", "Aktuell", "Optimiert", "Rendite", "Volatilitaet"]]
+    asset_rows = [["Asset", "Aktuell", "Optimiert", "Rendite", "Volatilitaet", "Risikobeitrag"]]
     for index, asset in enumerate(analysis.get("assets", [])):
+        risk = asset.get("riskContribution", {}) if isinstance(asset, dict) else {}
         asset_rows.append(
             [
                 asset.get("ticker", ""),
@@ -88,11 +109,29 @@ def create_pdf_export(analysis: dict[str, Any], recommendations: list[str] | Non
                 _percent(optimized_weights[index] if index < len(optimized_weights) else None),
                 _percent(asset.get("expectedReturn")),
                 _percent(asset.get("volatility")),
+                _percent(risk.get("percentContribution")),
             ]
         )
     asset_table = Table(asset_rows, hAlign="LEFT")
     asset_table.setStyle(_table_style())
     story.append(asset_table)
+    story.append(Spacer(1, 14))
+
+    story.append(Paragraph("Alternative Strategien", styles["Heading2"]))
+    strategy_rows = [["Strategie", "Rendite", "Volatilitaet", "Sharpe"]]
+    for strategy in analysis.get("strategies", []):
+        strategy_metrics = strategy.get("metrics", {})
+        strategy_rows.append(
+            [
+                strategy.get("name", ""),
+                _percent(strategy_metrics.get("expectedReturn")),
+                _percent(strategy_metrics.get("volatility")),
+                _number(strategy_metrics.get("sharpeRatio")),
+            ]
+        )
+    strategy_table = Table(strategy_rows, hAlign="LEFT")
+    strategy_table.setStyle(_table_style())
+    story.append(strategy_table)
     story.append(Spacer(1, 14))
 
     story.append(Paragraph("KI-/Regelbasierte Interpretation", styles["Heading2"]))

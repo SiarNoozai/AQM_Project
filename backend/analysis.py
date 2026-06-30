@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from statistics import NormalDist
 
 import numpy as np
@@ -19,6 +19,8 @@ try:
         FrontierPoint,
         PortfolioMetrics,
         RiskFinding,
+        RiskContribution,
+        StrategyResult,
     )
 except ImportError:
     from models import (
@@ -30,6 +32,8 @@ except ImportError:
         FrontierPoint,
         PortfolioMetrics,
         RiskFinding,
+        RiskContribution,
+        StrategyResult,
     )
 
 
@@ -51,6 +55,9 @@ SECURITY_METADATA: dict[str, dict[str, str]] = {
     "BND": {"assetClass": "ETF", "sector": "Bonds", "region": "USA"},
 }
 
+CACHE_TTL = timedelta(hours=6)
+_PRICE_CACHE: dict[tuple[tuple[str, ...], str, str, str], tuple[datetime, pd.DataFrame]] = {}
+
 
 def run_analysis(request: AnalyzeRequest) -> AnalysisResponse:
     prices = _download_prices(request)
@@ -66,6 +73,7 @@ def run_analysis(request: AnalyzeRequest) -> AnalysisResponse:
     mean_returns = returns.mean() * annual_factor
     covariance = returns.cov() * annual_factor
     correlation = returns.corr()
+    risk_contributions = _risk_contributions(request.tickers, weights, covariance)
     current_metrics = _metrics(mean_returns, covariance, returns, weights, request.risk_free_rate, request.var_confidence)
     optimized_weights = _optimize_max_sharpe(mean_returns, covariance, request.risk_free_rate)
     optimized_metrics = _metrics(
@@ -78,7 +86,17 @@ def run_analysis(request: AnalyzeRequest) -> AnalysisResponse:
     )
     frontier = _build_frontier(mean_returns, covariance, request.risk_free_rate, weights, optimized_weights)
     performance = _build_performance(prices, weights, optimized_weights)
-    asset_results = _build_asset_results(request.tickers, weights, mean_returns, covariance, prices)
+    strategy_results = _build_strategy_results(
+        request.tickers,
+        weights,
+        mean_returns,
+        covariance,
+        returns,
+        request.risk_free_rate,
+        request.var_confidence,
+        optimized_weights,
+    )
+    asset_results = _build_asset_results(request.tickers, weights, mean_returns, covariance, prices, risk_contributions)
     asset_allocation = _build_asset_allocation(request.tickers, weights)
     risk_findings = _build_risk_findings(
         request.tickers,
@@ -104,6 +122,7 @@ def run_analysis(request: AnalyzeRequest) -> AnalysisResponse:
         optimizedWeights=[float(value) for value in optimized_weights],
         assetAllocation=asset_allocation,
         riskFindings=risk_findings,
+        strategies=strategy_results,
         correlationMatrix=CorrelationMatrix(
             tickers=request.tickers,
             values=_matrix_to_lists(correlation),
@@ -172,10 +191,7 @@ def _build_asset_allocation(tickers: list[str], weights: np.ndarray) -> AssetAll
     by_region: dict[str, float] = {}
 
     for index, ticker in enumerate(tickers):
-        metadata = SECURITY_METADATA.get(
-            ticker,
-            {"assetClass": "Unknown", "sector": "Unknown", "region": "Unknown"},
-        )
+        metadata = _security_metadata(ticker)
         weight = float(weights[index])
         _add_weight(by_asset_class, metadata["assetClass"], weight)
         _add_weight(by_sector, metadata["sector"], weight)
@@ -187,6 +203,20 @@ def _build_asset_allocation(tickers: list[str], weights: np.ndarray) -> AssetAll
         bySector=_round_weight_map(by_sector),
         byRegion=_round_weight_map(by_region),
     )
+
+
+def _security_metadata(ticker: str) -> dict[str, str]:
+    if ticker in SECURITY_METADATA:
+        return {**SECURITY_METADATA[ticker], "metadataStatus": "known"}
+    if ticker.endswith((".DE", ".F")):
+        return {"assetClass": "Stock", "sector": "Unknown", "region": "Europe", "metadataStatus": "inferred"}
+    if ticker.endswith((".L", ".PA", ".AS")):
+        return {"assetClass": "Stock", "sector": "Unknown", "region": "Europe", "metadataStatus": "inferred"}
+    if ticker.endswith((".TO", ".V")):
+        return {"assetClass": "Stock", "sector": "Unknown", "region": "Canada", "metadataStatus": "inferred"}
+    if ticker.endswith(("ETF", "FUND")):
+        return {"assetClass": "ETF", "sector": "Unknown", "region": "Unknown", "metadataStatus": "inferred"}
+    return {"assetClass": "Unknown", "sector": "Unknown", "region": "Unknown", "metadataStatus": "unknown"}
 
 
 def _build_risk_findings(
@@ -277,6 +307,20 @@ def _build_risk_findings(
             )
         )
 
+    unknown_assets = [ticker for ticker in tickers if _security_metadata(ticker)["metadataStatus"] == "unknown"]
+    if unknown_assets:
+        findings.append(
+            RiskFinding(
+                type="allocation",
+                severity="low",
+                affectedAssets=unknown_assets,
+                message=(
+                    f"Fuer {', '.join(unknown_assets)} liegen keine belastbaren Asset-Allocation-Metadaten vor. "
+                    "Diese Positionen werden transparent als unbekannt klassifiziert."
+                ),
+            )
+        )
+
     findings.append(
         RiskFinding(
             type="behavioral",
@@ -291,6 +335,17 @@ def _build_risk_findings(
 
 
 def _download_prices(request: AnalyzeRequest) -> pd.DataFrame:
+    cache_key = (
+        tuple(request.tickers),
+        request.start_date.isoformat(),
+        request.end_date.isoformat(),
+        request.frequency,
+    )
+    cached = _PRICE_CACHE.get(cache_key)
+    now = datetime.now(timezone.utc)
+    if cached and now - cached[0] <= CACHE_TTL:
+        return cached[1].copy()
+
     try:
         data = yf.download(
             tickers=request.tickers,
@@ -315,7 +370,9 @@ def _download_prices(request: AnalyzeRequest) -> pd.DataFrame:
         raise HTTPException(status_code=422, detail=f"Keine verwertbaren Kursdaten fuer: {', '.join(missing)}")
     if prices.shape[1] != len(request.tickers):
         raise HTTPException(status_code=422, detail="Nicht fuer alle Ticker liegen verwertbare Kursdaten vor.")
-    return prices[request.tickers]
+    cleaned = prices[request.tickers]
+    _PRICE_CACHE[cache_key] = (now, cleaned.copy())
+    return cleaned
 
 
 def _extract_close_prices(data: pd.DataFrame, tickers: list[str]) -> pd.DataFrame:
@@ -488,15 +545,141 @@ def _build_performance(prices: pd.DataFrame, weights: np.ndarray, optimized_weig
     return rows
 
 
+def _risk_contributions(tickers: list[str], weights: np.ndarray, covariance: pd.DataFrame) -> dict[str, RiskContribution]:
+    covariance_values = covariance.to_numpy(dtype=float)
+    portfolio_variance = float(weights.T @ covariance_values @ weights)
+    portfolio_volatility = float(np.sqrt(portfolio_variance)) if portfolio_variance > 0 else 0.0
+    contributions: dict[str, RiskContribution] = {}
+
+    if portfolio_volatility <= 0:
+        equal = 1 / len(tickers)
+        for ticker in tickers:
+            contributions[ticker] = RiskContribution(
+                volatilityContribution=0.0,
+                percentContribution=equal,
+                method="zero-volatility fallback",
+            )
+        return contributions
+
+    marginal = covariance_values @ weights / portfolio_volatility
+    component = weights * marginal
+    total_component = float(component.sum())
+
+    for index, ticker in enumerate(tickers):
+        percent = float(component[index] / total_component) if total_component else 0.0
+        contributions[ticker] = RiskContribution(
+            volatilityContribution=float(component[index]),
+            percentContribution=percent,
+            method="component volatility contribution from covariance matrix",
+        )
+    return contributions
+
+
+def _build_strategy_results(
+    tickers: list[str],
+    current_weights: np.ndarray,
+    mean_returns: pd.Series,
+    covariance: pd.DataFrame,
+    returns: pd.DataFrame,
+    risk_free_rate: float,
+    var_confidence: float,
+    optimized_weights: np.ndarray,
+) -> list[StrategyResult]:
+    asset_count = len(tickers)
+    max_weight = 0.55 if asset_count > 2 else 0.75
+    low_vol = _optimize_min_volatility(covariance, max_weight)
+    diversified = _normalize_weights((np.repeat(1 / asset_count, asset_count) + current_weights) / 2)
+    return_oriented = _tilt_to_expected_return(mean_returns, max_weight)
+    strategies = [
+        (
+            "low_volatility",
+            "Volatilitaetsarme Variante",
+            "Minimiert die historische Portfolio-Volatilitaet mit long-only Gewichten.",
+            low_vol,
+        ),
+        (
+            "diversified",
+            "Staerker diversifizierte Variante",
+            "Bewegt das Portfolio in Richtung Gleichgewichtung, um Einzelklumpen zu reduzieren.",
+            diversified,
+        ),
+        (
+            "return_oriented",
+            "Renditeorientierte Variante",
+            "Gewichtet Positionen mit hoeherer historischer Rendite staerker, aber mit Obergrenze.",
+            return_oriented,
+        ),
+        (
+            "max_sharpe",
+            "Sharpe-Ratio-orientierte Variante",
+            "Maximiert die historische Sharpe Ratio unter long-only Nebenbedingungen.",
+            optimized_weights,
+        ),
+    ]
+
+    results: list[StrategyResult] = []
+    for strategy_id, name, description, weights in strategies:
+        metrics = _metrics(mean_returns, covariance, returns, weights, risk_free_rate, var_confidence)
+        results.append(
+            StrategyResult(
+                id=strategy_id,
+                name=name,
+                description=description,
+                weights=[float(value) for value in weights],
+                metrics=metrics,
+                weightDelta=[float(value) for value in weights - current_weights],
+                diversificationNote=_strategy_diversification_note(weights),
+            )
+        )
+    return results
+
+
+def _optimize_min_volatility(covariance: pd.DataFrame, max_weight: float) -> np.ndarray:
+    asset_count = len(covariance)
+    initial = np.repeat(1 / asset_count, asset_count)
+    bounds = tuple((0.0, max_weight) for _ in range(asset_count))
+    constraints = ({"type": "eq", "fun": lambda weights: np.sum(weights) - 1.0},)
+
+    def objective(weights: np.ndarray) -> float:
+        return float(np.sqrt(weights.T @ covariance.to_numpy() @ weights))
+
+    result = minimize(objective, initial, method="SLSQP", bounds=bounds, constraints=constraints)
+    if not result.success:
+        return initial
+    return _normalize_weights(np.clip(result.x, 0, max_weight))
+
+
+def _tilt_to_expected_return(mean_returns: pd.Series, max_weight: float) -> np.ndarray:
+    values = mean_returns.to_numpy(dtype=float)
+    shifted = values - float(values.min())
+    if float(shifted.sum()) <= 0:
+        shifted = np.ones_like(values)
+    weights = shifted / shifted.sum()
+    weights = np.minimum(weights, max_weight)
+    if float(weights.sum()) <= 0:
+        return np.repeat(1 / len(values), len(values))
+    return _normalize_weights(weights)
+
+
+def _strategy_diversification_note(weights: np.ndarray) -> str:
+    largest = float(weights.max())
+    effective_positions = 1 / float(np.sum(weights * weights))
+    if largest >= 0.5:
+        return f"Groesste Position {largest * 100:.1f} Prozent; Strategie bleibt konzentriert."
+    return f"Effektive Positionszahl ca. {effective_positions:.1f}; groesste Position {largest * 100:.1f} Prozent."
+
+
 def _build_asset_results(
     tickers: list[str],
     weights: np.ndarray,
     mean_returns: pd.Series,
     covariance: pd.DataFrame,
     prices: pd.DataFrame,
+    risk_contributions: dict[str, RiskContribution],
 ) -> list[AssetResult]:
     results: list[AssetResult] = []
     for index, ticker in enumerate(tickers):
+        metadata = _security_metadata(ticker)
         results.append(
             AssetResult(
                 ticker=ticker,
@@ -504,6 +687,11 @@ def _build_asset_results(
                 expectedReturn=float(mean_returns[ticker]),
                 volatility=float(np.sqrt(covariance.loc[ticker, ticker])),
                 lastPrice=float(prices[ticker].iloc[-1]),
+                assetClass=metadata["assetClass"],
+                sector=metadata["sector"],
+                region=metadata["region"],
+                metadataStatus=metadata["metadataStatus"],
+                riskContribution=risk_contributions[ticker],
             )
         )
     return results

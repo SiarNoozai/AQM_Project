@@ -17,6 +17,11 @@ Die Anwendung zeigt, wie Privatanleger ein Portfolio aus Aktien oder ETFs eingeb
 - Charts: normalisierte Performance, Korrelationsmatrix, Effizienzgrenze aus API-Daten
 - Max-Sharpe-Optimierung mit SciPy
 - KI-Empfehlungsbereich via Ollama, mit regelbasiertem Fallback
+- strukturierter KI-Bericht und Rueckfragenfunktion
+- Risikobeitraege einzelner Positionen
+- alternative Strategien: volatilitaetsarm, diversifiziert, renditeorientiert, Max-Sharpe
+- Portfolio-Speicherung im Browser per LocalStorage
+- einfacher Backend-Cache fuer Kursdaten
 - PDF- und CSV-Export fuer Bericht und Praesentation
 
 ## Lokal starten
@@ -55,6 +60,15 @@ ollama pull llama3.1
 
 Wenn Ollama nicht erreichbar ist, nutzt das Backend automatisch regelbasierte Empfehlungen.
 
+## Tests und Checks
+
+```bash
+uv run --project backend pytest backend/tests
+npm run build
+```
+
+Der Backend-Testbefehl nutzt das Backend-uv-Projekt. Der Frontend-Build prueft TypeScript und erstellt den Vite-Produktionsbuild.
+
 ## Projektlogik
 
 Der Prototyp trennt bewusst zwischen:
@@ -70,10 +84,25 @@ Die aktuelle Version kann echte Daten ueber das lokale Backend laden. Der Demo-M
 - `GET /api/health`
 - `POST /api/analyze`
 - `POST /api/recommend`
+- `POST /api/ask`
 - `POST /api/export/csv`
 - `POST /api/export/pdf`
 
 Die Analyse basiert auf historischen Daten. Sie ist keine Anlageberatung und keine Prognose.
+
+## Speicherung und Caching
+
+Portfolios werden im Browser per LocalStorage gespeichert. Das ist fuer den MVP bewusst einfach gehalten und kann spaeter durch eine Datenbank ersetzt werden.
+
+Kursdaten werden im Backend pro Prozess fuer sechs Stunden gecacht. Wiederholte Analysen mit denselben Tickern, demselben Zeitraum und derselben Frequenz muessen dadurch nicht erneut bei yfinance laden. Bei Backend-Neustart ist der Cache leer.
+
+## Environment Variables
+
+Siehe `.env.example`.
+
+- `VITE_API_BASE_URL`: Frontend-URL zum Backend, z. B. `http://127.0.0.1:8000`
+- `OLLAMA_URL`: Ollama HTTP API, Default `http://localhost:11434`
+- `OLLAMA_MODEL`: Modellname, Default `llama3.1`
 
 ## DigitalOcean App Platform
 
