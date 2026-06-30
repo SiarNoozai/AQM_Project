@@ -225,7 +225,7 @@ select:focus-visible {
 
 .portfolio-sidebar {
   display: grid;
-  grid-template-rows: auto auto auto auto auto 1fr;
+  grid-template-rows: auto auto auto auto auto auto 1fr;
   gap: 12px;
   border-right: 1px solid #d9e1ea;
   background: #fbfcfe;
@@ -393,6 +393,37 @@ select:focus-visible {
   font-size: 12px;
 }
 
+.portfolio-name-input,
+.storage-actions select,
+.storage-actions button {
+  min-height: 28px;
+  border: 1px solid #d2dce8;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #203047;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.portfolio-name-input {
+  width: 100%;
+  padding: 0 8px;
+}
+
+.storage-section {
+  gap: 6px;
+}
+
+.storage-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 72px;
+  gap: 6px;
+}
+
+.storage-actions button {
+  padding: 0 7px;
+}
+
 .currency-row {
   align-self: end;
   grid-template-columns: 1fr 94px;
@@ -403,7 +434,7 @@ select:focus-visible {
 
 .analysis-board {
   display: grid;
-  grid-template-rows: 94px minmax(0, 1fr) 262px;
+  grid-template-rows: 94px minmax(0, 1fr) 232px 58px;
   gap: 12px;
   overflow: hidden;
 }
@@ -706,6 +737,44 @@ select:focus-visible {
   border-radius: 999px;
 }
 
+.insight-strip {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  gap: 12px;
+  min-height: 0;
+}
+
+.insight-strip article {
+  display: grid;
+  grid-template-columns: auto repeat(3, minmax(0, 1fr));
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #d8e1ec;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 8px 10px;
+}
+
+.insight-strip h3 {
+  margin: 0;
+  color: #1c2b40;
+  font-size: 11px;
+}
+
+.insight-strip p {
+  overflow: hidden;
+  margin: 0;
+  color: #4a586b;
+  font-size: 10px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.insight-strip strong {
+  color: #18283d;
+}
+
 .current-marker {
   background: #08345f;
 }
@@ -731,8 +800,8 @@ select:focus-visible {
 }
 
 .ai-rail {
-  grid-template-rows: auto auto minmax(0, 0.9fr) auto auto;
-  gap: 12px;
+  grid-template-rows: auto auto minmax(0, 0.72fr) minmax(0, 0.56fr) auto minmax(0, 0.76fr) auto;
+  gap: 9px;
   overflow: hidden;
   padding: 18px 17px;
 }
@@ -846,6 +915,38 @@ select:focus-visible {
   -webkit-line-clamp: 2;
 }
 
+.report-section {
+  display: grid;
+  gap: 6px;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.report-section article {
+  display: grid;
+  gap: 2px;
+}
+
+.report-section strong {
+  overflow: hidden;
+  color: #18283d;
+  font-size: 11px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.report-section p {
+  display: -webkit-box;
+  overflow: hidden;
+  margin: 0;
+  color: #3d4b60;
+  font-size: 10px;
+  line-height: 1.3;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
 .risk-findings {
   display: grid;
   gap: 7px;
@@ -886,6 +987,47 @@ select:focus-visible {
   line-height: 1.3;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
+}
+
+.question-box {
+  display: grid;
+  gap: 6px;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.question-box textarea {
+  width: 100%;
+  min-height: 42px;
+  max-height: 54px;
+  resize: none;
+  border: 1px solid #d2dce8;
+  border-radius: 7px;
+  padding: 7px 8px;
+  color: #203047;
+  font-size: 11px;
+  line-height: 1.25;
+}
+
+.question-box button {
+  min-height: 28px;
+  border: 1px solid #062b52;
+  border-radius: 7px;
+  color: #ffffff;
+  background: #062b52;
+  font-size: 11px;
+  font-weight: 760;
+}
+
+.question-box p {
+  display: -webkit-box;
+  overflow: hidden;
+  margin: 0;
+  color: #34445a;
+  font-size: 10px;
+  line-height: 1.3;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
 }
 
 .ai-footer {
@@ -1014,7 +1156,7 @@ select:focus-visible {
   }
 
   .analysis-board {
-    grid-template-rows: auto auto auto;
+    grid-template-rows: auto auto auto auto;
     overflow: visible;
   }
 
@@ -1042,6 +1184,11 @@ select:focus-visible {
 
   .ai-rail {
     overflow: visible;
+  }
+
+  .insight-strip,
+  .insight-strip article {
+    grid-template-columns: 1fr;
   }
 
   .notice {

@@ -51,12 +51,25 @@ class PortfolioMetrics(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
+class RiskContribution(BaseModel):
+    volatility_contribution: float = Field(alias="volatilityContribution")
+    percent_contribution: float = Field(alias="percentContribution")
+    method: str
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
 class AssetResult(BaseModel):
     ticker: str
     weight: float
     expected_return: float = Field(alias="expectedReturn")
     volatility: float
     last_price: float = Field(alias="lastPrice")
+    asset_class: str = Field(alias="assetClass")
+    sector: str
+    region: str
+    metadata_status: Literal["known", "inferred", "unknown"] = Field(alias="metadataStatus")
+    risk_contribution: RiskContribution = Field(alias="riskContribution")
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -90,6 +103,23 @@ class FrontierPoint(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
+class StrategyResult(BaseModel):
+    id: Literal["low_volatility", "diversified", "return_oriented", "max_sharpe"]
+    name: str
+    description: str
+    weights: list[float]
+    metrics: PortfolioMetrics
+    weight_delta: list[float] = Field(alias="weightDelta")
+    diversification_note: str = Field(alias="diversificationNote")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class ReportSection(BaseModel):
+    title: str
+    content: str
+
+
 class CorrelationMatrix(BaseModel):
     tickers: list[str]
     values: list[list[float]]
@@ -112,6 +142,7 @@ class AnalysisResponse(BaseModel):
     optimized_weights: list[float] = Field(alias="optimizedWeights")
     asset_allocation: AssetAllocation = Field(alias="assetAllocation")
     risk_findings: list[RiskFinding] = Field(alias="riskFindings")
+    strategies: list[StrategyResult]
     correlation_matrix: CorrelationMatrix = Field(alias="correlationMatrix")
     covariance_matrix: list[list[float]] = Field(alias="covarianceMatrix")
     performance: list[dict[str, float | str]]
@@ -128,6 +159,20 @@ class RecommendRequest(BaseModel):
 
 class RecommendResponse(BaseModel):
     recommendations: list[str]
+    report: list[ReportSection] = Field(default_factory=list)
+    source: Literal["ollama", "rules"]
+    model: str
+    disclaimer: str
+
+
+class AskRequest(BaseModel):
+    analysis: dict[str, Any]
+    question: str = Field(min_length=3, max_length=500)
+    model: str | None = None
+
+
+class AskResponse(BaseModel):
+    answer: str
     source: Literal["ollama", "rules"]
     model: str
     disclaimer: str

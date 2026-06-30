@@ -33,9 +33,16 @@ import {
   ApiRiskFinding,
   RecommendationResult,
   analyzePortfolio,
+  askPortfolioQuestion,
   downloadExport,
   recommendPortfolio,
 } from "./lib/api";
+import {
+  SavedPortfolio,
+  deletePortfolioRecord,
+  loadSavedPortfolios,
+  savePortfolioRecord,
+} from "./lib/portfolioStorage";
 import {
   FrontierPoint,
   buildEfficientFrontier,
@@ -62,6 +69,15 @@ type DisplayAsset = {
   expectedReturn: number;
   volatility: number;
   color: string;
+  assetClass?: string;
+  sector?: string;
+  region?: string;
+  metadataStatus?: "known" | "inferred" | "unknown";
+  riskContribution?: {
+    volatilityContribution: number;
+    percentContribution: number;
+    method: string;
+  };
 };
 
 type Frequency = "1d" | "1wk" | "1mo";
@@ -87,6 +103,12 @@ function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [isExporting, setIsExporting] = useState<"csv" | "pdf" | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [savedPortfolios, setSavedPortfolios] = useState<SavedPortfolio[]>(() => loadSavedPortfolios());
+  const [portfolioName, setPortfolioName] = useState("MVP Portfolio");
+  const [selectedPortfolioId, setSelectedPortfolioId] = useState("");
+  const [question, setQuestion] = useState("");
+  const [questionAnswer, setQuestionAnswer] = useState<string | null>(null);
+  const [isAsking, setIsAsking] = useState(false);
 
   const demoWeights = useMemo(() => normalizeWeights(assets), [assets]);
   const demoFrontier = useMemo(() => buildEfficientFrontier(assets, demoWeights), [assets, demoWeights]);
@@ -123,6 +145,11 @@ function App() {
         expectedReturn: asset.expectedReturn,
         volatility: asset.volatility,
         color: existing?.color ?? initialAssets[index % initialAssets.length].color,
+        assetClass: asset.assetClass,
+        sector: asset.sector,
+        region: asset.region,
+        metadataStatus: asset.metadataStatus,
+        riskContribution: asset.riskContribution,
       };
     });
   }, [analysis, assets]);
@@ -134,8 +161,13 @@ function App() {
   const activePerformance = analysis?.performance ?? demoPerformance;
   const activeFrontier = analysis?.frontier ?? demoFrontier;
   const activeRecommendations = recommendation?.recommendations ?? analysis?.recommendations ?? demoRecommendations;
+  const activeReport = recommendation?.report ?? buildDemoReport(activeMetrics, activeOptimizedMetrics, displayAssets);
   const activeRiskFindings = analysis?.riskFindings ?? demoRiskFindings;
   const visibleRiskFindings = getVisibleRiskFindings(activeRiskFindings);
+  const visibleStrategies = analysis?.strategies ?? [];
+  const visibleRiskAssets = [...displayAssets]
+    .sort((left, right) => (right.riskContribution?.percentContribution ?? 0) - (left.riskContribution?.percentContribution ?? 0))
+    .slice(0, 3);
   const recommendationSource = recommendation?.source ?? analysis?.recommendationSource ?? "rules";
   const isLive = Boolean(analysis);
   const weightSum = assets.reduce((sum, asset) => sum + Number(asset.weight || 0), 0);
@@ -160,6 +192,29 @@ function App() {
     setAnalysis(null);
     setRecommendation(null);
     setError(null);
+  }
+
+  function handleSavePortfolio() {
+    const records = savePortfolioRecord(savedPortfolios, portfolioName, assets, analysis);
+    setSavedPortfolios(records);
+    setSelectedPortfolioId(records[0]?.id ?? "");
+  }
+
+  function handleLoadPortfolio() {
+    const record = savedPortfolios.find((item) => item.id === selectedPortfolioId);
+    if (!record) return;
+    setAssets(record.assets);
+    setAnalysis(record.lastAnalysis ?? null);
+    setRecommendation(null);
+    setPortfolioName(record.name);
+    setError(null);
+  }
+
+  function handleDeletePortfolio() {
+    if (!selectedPortfolioId) return;
+    const records = deletePortfolioRecord(savedPortfolios, selectedPortfolioId);
+    setSavedPortfolios(records);
+    setSelectedPortfolioId(records[0]?.id ?? "");
   }
 
   async function handleAnalyze() {
@@ -209,6 +264,28 @@ function App() {
       setError(caughtError instanceof Error ? caughtError.message : "Export konnte nicht erstellt werden.");
     } finally {
       setIsExporting(null);
+    }
+  }
+
+  async function handleAskQuestion() {
+    if (!analysis) {
+      setError("Rueckfragen sind erst nach einer Live-Analyse verfuegbar.");
+      return;
+    }
+    if (!question.trim()) {
+      return;
+    }
+
+    setIsAsking(true);
+    setQuestionAnswer(null);
+    setError(null);
+    try {
+      const result = await askPortfolioQuestion(analysis, question);
+      setQuestionAnswer(result.answer);
+    } catch (caughtError) {
+      setError(caughtError instanceof Error ? caughtError.message : "Rueckfrage konnte nicht beantwortet werden.");
+    } finally {
+      setIsAsking(false);
     }
   }
 
@@ -333,6 +410,41 @@ function App() {
             <div className={`weight-sum ${Math.abs(weightSum - 100) <= 0.5 ? "valid" : "invalid"}`}>
               <span>Summe</span>
               <strong>{weightSum.toFixed(0)} %</strong>
+            </div>
+          </section>
+
+          <section className="sidebar-section storage-section">
+            <h3>Portfolio speichern</h3>
+            <input
+              aria-label="Portfolio Name"
+              className="portfolio-name-input"
+              value={portfolioName}
+              onChange={(event) => setPortfolioName(event.target.value)}
+            />
+            <div className="storage-actions">
+              <button type="button" onClick={handleSavePortfolio}>
+                Speichern
+              </button>
+              <button type="button" onClick={handleLoadPortfolio} disabled={!selectedPortfolioId}>
+                Laden
+              </button>
+            </div>
+            <div className="storage-actions">
+              <select
+                aria-label="Gespeicherte Portfolios"
+                value={selectedPortfolioId}
+                onChange={(event) => setSelectedPortfolioId(event.target.value)}
+              >
+                <option value="">Kein gespeichertes Portfolio</option>
+                {savedPortfolios.map((portfolio) => (
+                  <option value={portfolio.id} key={portfolio.id}>
+                    {portfolio.name}
+                  </option>
+                ))}
+              </select>
+              <button type="button" onClick={handleDeletePortfolio} disabled={!selectedPortfolioId}>
+                Loeschen
+              </button>
             </div>
           </section>
 
@@ -534,6 +646,25 @@ function App() {
               </div>
             </article>
           </section>
+
+          <section className="insight-strip">
+            <article>
+              <h3>Risikobeitraege</h3>
+              {visibleRiskAssets.map((asset) => (
+                <p key={asset.ticker}>
+                  <strong>{asset.ticker}</strong> {formatPercent(asset.riskContribution?.percentContribution ?? 0)}
+                </p>
+              ))}
+            </article>
+            <article>
+              <h3>Strategien</h3>
+              {visibleStrategies.slice(0, 2).map((strategy) => (
+                <p key={strategy.id}>
+                  <strong>{strategy.name}</strong> Sharpe {strategy.metrics.sharpeRatio.toFixed(2)}
+                </p>
+              ))}
+            </article>
+          </section>
         </main>
 
         <aside className="ai-rail panel" aria-label="KI Empfehlung">
@@ -574,6 +705,16 @@ function App() {
             ))}
           </section>
 
+          <section className="report-section">
+            <h3>Bericht</h3>
+            {activeReport.slice(0, 3).map((section) => (
+              <article key={section.title}>
+                <strong>{section.title}</strong>
+                <p>{section.content}</p>
+              </article>
+            ))}
+          </section>
+
           <section className="risk-findings">
             <h3>Auffaelligkeiten</h3>
             {visibleRiskFindings.map((finding, index) => (
@@ -582,6 +723,20 @@ function App() {
                 <p>{finding.message}</p>
               </article>
             ))}
+          </section>
+
+          <section className="question-box">
+            <h3>Rueckfrage</h3>
+            <textarea
+              aria-label="Rueckfrage zum Portfolio"
+              placeholder="z. B. Was bedeutet der VaR?"
+              value={question}
+              onChange={(event) => setQuestion(event.target.value)}
+            />
+            <button type="button" onClick={handleAskQuestion} disabled={!analysis || isAsking}>
+              {isAsking ? "Antwort..." : "Fragen"}
+            </button>
+            {questionAnswer ? <p>{questionAnswer}</p> : null}
           </section>
 
           <footer className="ai-footer">
@@ -740,6 +895,35 @@ function getVisibleRiskFindings(findings: ApiRiskFinding[]) {
   const behavioral = findings.find((finding) => finding.type === "behavioral");
   const primary = findings.find((finding) => finding.type !== "behavioral");
   return [primary, behavioral].filter((finding): finding is ApiRiskFinding => Boolean(finding)).slice(0, 2);
+}
+
+function buildDemoReport(
+  metrics: { expectedReturn: number; volatility: number; sharpeRatio: number; valueAtRisk: number },
+  optimizedMetrics: { expectedReturn: number; volatility: number; sharpeRatio: number; valueAtRisk: number },
+  assets: DisplayAsset[],
+) {
+  return [
+    {
+      title: "Kurze Zusammenfassung",
+      content: `Demo-Portfolio mit ${formatPercent(metrics.expectedReturn)} Rendite, ${formatPercent(
+        metrics.volatility,
+      )} Volatilitaet und Sharpe ${metrics.sharpeRatio.toFixed(2)}.`,
+    },
+    {
+      title: "Portfoliozusammensetzung",
+      content: assets.map((asset) => `${asset.ticker} ${percentFormatter.format(toDecimalWeight(asset.weight))}`).join(", "),
+    },
+    {
+      title: "Vergleich alternativer Gewichtungen",
+      content: `Die optimierte Demo-Variante erreicht Sharpe ${optimizedMetrics.sharpeRatio.toFixed(
+        2,
+      )} bei VaR -${formatPercent(optimizedMetrics.valueAtRisk)}.`,
+    },
+  ];
+}
+
+function toDecimalWeight(weight: number) {
+  return weight > 1 ? weight / 100 : weight;
 }
 
 function addYears(date: Date, years: number) {

@@ -7,13 +7,13 @@ from fastapi.responses import Response
 try:
     from .analysis import run_analysis
     from .exports import create_csv_export, create_pdf_export
-    from .models import AnalyzeRequest, ExportRequest, RecommendRequest, RecommendResponse
-    from .recommendations import generate_recommendations
+    from .models import AnalyzeRequest, AskRequest, AskResponse, ExportRequest, RecommendRequest, RecommendResponse
+    from .recommendations import answer_question, generate_recommendations
 except ImportError:
     from analysis import run_analysis
     from exports import create_csv_export, create_pdf_export
-    from models import AnalyzeRequest, ExportRequest, RecommendRequest, RecommendResponse
-    from recommendations import generate_recommendations
+    from models import AnalyzeRequest, AskRequest, AskResponse, ExportRequest, RecommendRequest, RecommendResponse
+    from recommendations import answer_question, generate_recommendations
 
 
 app = FastAPI(title="Portfolio- und Risikoanalyse API", version="0.1.0")
@@ -40,6 +40,11 @@ def analyze(request: AnalyzeRequest):
 @app.post("/api/recommend", response_model=RecommendResponse)
 async def recommend(request: RecommendRequest) -> RecommendResponse:
     return await generate_recommendations(request.analysis, request.model)
+
+
+@app.post("/api/ask", response_model=AskResponse)
+async def ask(request: AskRequest) -> AskResponse:
+    return await answer_question(request.analysis, request.question, request.model)
 
 
 @app.post("/api/export/csv")
