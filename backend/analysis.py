@@ -9,14 +9,24 @@ import yfinance as yf
 from fastapi import HTTPException
 from scipy.optimize import minimize
 
-from .models import (
-    AnalysisResponse,
-    AnalyzeRequest,
-    AssetResult,
-    CorrelationMatrix,
-    FrontierPoint,
-    PortfolioMetrics,
-)
+try:
+    from .models import (
+        AnalysisResponse,
+        AnalyzeRequest,
+        AssetResult,
+        CorrelationMatrix,
+        FrontierPoint,
+        PortfolioMetrics,
+    )
+except ImportError:
+    from models import (
+        AnalysisResponse,
+        AnalyzeRequest,
+        AssetResult,
+        CorrelationMatrix,
+        FrontierPoint,
+        PortfolioMetrics,
+    )
 
 
 DISCLAIMER = (

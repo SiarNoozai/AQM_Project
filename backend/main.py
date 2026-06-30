@@ -4,10 +4,16 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 
-from .analysis import run_analysis
-from .exports import create_csv_export, create_pdf_export
-from .models import AnalyzeRequest, ExportRequest, RecommendRequest, RecommendResponse
-from .recommendations import generate_recommendations
+try:
+    from .analysis import run_analysis
+    from .exports import create_csv_export, create_pdf_export
+    from .models import AnalyzeRequest, ExportRequest, RecommendRequest, RecommendResponse
+    from .recommendations import generate_recommendations
+except ImportError:
+    from analysis import run_analysis
+    from exports import create_csv_export, create_pdf_export
+    from models import AnalyzeRequest, ExportRequest, RecommendRequest, RecommendResponse
+    from recommendations import generate_recommendations
 
 
 app = FastAPI(title="Portfolio- und Risikoanalyse API", version="0.1.0")

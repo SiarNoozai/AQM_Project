@@ -35,8 +35,9 @@ http://127.0.0.1:5173
 Backend in einem zweiten Terminal starten:
 
 ```bash
+cd backend
 uv sync
-uv run uvicorn backend.main:app --reload --host 127.0.0.1 --port 8000
+uv run uvicorn main:app --reload --host 127.0.0.1 --port 8000
 ```
 
 Health-Check:
@@ -76,17 +77,18 @@ Die Analyse basiert auf historischen Daten. Sie ist keine Anlageberatung und kei
 
 ## DigitalOcean App Platform
 
-Das Backend nutzt `uv`. DigitalOcean App Platform erwartet dafuer neben `pyproject.toml`
-und `uv.lock` auch eine `.python-version` Datei. Diese ist auf Python `3.11.15`
-gesetzt; `runtime.txt` ist als Buildpack-Fallback ebenfalls vorhanden.
+Das Backend nutzt `uv`. DigitalOcean App Platform erwartet dafuer im Backend-Verzeichnis
+neben `pyproject.toml` und `uv.lock` auch eine `.python-version` Datei. Diese ist unter
+`backend/.python-version` auf Python `3.11.15` gesetzt; `backend/runtime.txt` ist als
+Buildpack-Fallback ebenfalls vorhanden.
 
 Empfohlene Backend-Komponente:
 
 ```text
 Type: Web Service
-Source directory: /
+Source directory: /backend
 Build command: uv sync --frozen
-Run command: uv run uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8080}
+Run command: uv run uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080}
 HTTP port: 8080
 ```
 

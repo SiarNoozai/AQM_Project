@@ -5,8 +5,12 @@ from typing import Any
 
 import httpx
 
-from .analysis import DISCLAIMER, build_rule_recommendations
-from .models import RecommendResponse
+try:
+    from .analysis import DISCLAIMER, build_rule_recommendations
+    from .models import RecommendResponse
+except ImportError:
+    from analysis import DISCLAIMER, build_rule_recommendations
+    from models import RecommendResponse
 
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
