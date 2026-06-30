@@ -30,6 +30,7 @@ import { AssetInput, baseCorrelationMatrix, initialAssets } from "./data/assets"
 import {
   ApiAnalysis,
   ApiFrontierPoint,
+  ApiRiskFinding,
   RecommendationResult,
   analyzePortfolio,
   downloadExport,
@@ -103,6 +104,10 @@ function App() {
     () => buildRecommendations(assets, demoWeights, demoMetrics, demoOptimizedPoint),
     [assets, demoMetrics, demoOptimizedPoint, demoWeights],
   );
+  const demoRiskFindings = useMemo(
+    () => buildDemoRiskFindings(assets, demoWeights, demoMetrics),
+    [assets, demoMetrics, demoWeights],
+  );
 
   const displayAssets: DisplayAsset[] = useMemo(() => {
     if (!analysis) {
@@ -129,6 +134,8 @@ function App() {
   const activePerformance = analysis?.performance ?? demoPerformance;
   const activeFrontier = analysis?.frontier ?? demoFrontier;
   const activeRecommendations = recommendation?.recommendations ?? analysis?.recommendations ?? demoRecommendations;
+  const activeRiskFindings = analysis?.riskFindings ?? demoRiskFindings;
+  const visibleRiskFindings = getVisibleRiskFindings(activeRiskFindings);
   const recommendationSource = recommendation?.source ?? analysis?.recommendationSource ?? "rules";
   const isLive = Boolean(analysis);
   const weightSum = assets.reduce((sum, asset) => sum + Number(asset.weight || 0), 0);
@@ -567,6 +574,16 @@ function App() {
             ))}
           </section>
 
+          <section className="risk-findings">
+            <h3>Auffaelligkeiten</h3>
+            {visibleRiskFindings.map((finding, index) => (
+              <article className={`risk-finding severity-${finding.severity}`} key={`${finding.type}-${index}`}>
+                <strong>{getRiskFindingTitle(finding)}</strong>
+                <p>{finding.message}</p>
+              </article>
+            ))}
+          </section>
+
           <footer className="ai-footer">
             <h3>Hinweis</h3>
             <p>
@@ -659,6 +676,70 @@ function getRecommendationTitle(index: number) {
     return "Diversifikation pruefen";
   }
   return "Risikomanagement beibehalten";
+}
+
+function buildDemoRiskFindings(
+  assets: AssetInput[],
+  weights: number[],
+  metrics: { volatility: number; sharpeRatio: number; diversificationScore: number },
+): ApiRiskFinding[] {
+  const dominantIndex = weights.reduce((maxIndex, weight, index) => (weight > weights[maxIndex] ? index : maxIndex), 0);
+  const findings: ApiRiskFinding[] = [];
+  if ((weights[dominantIndex] ?? 0) >= 0.35) {
+    findings.push({
+      type: "concentration",
+      severity: "medium",
+      affectedAssets: [assets[dominantIndex].ticker],
+      message: `${assets[dominantIndex].ticker} ist mit ${percentFormatter.format(
+        weights[dominantIndex],
+      )} die groesste Einzelposition. Das kann ein Klumpenrisiko erzeugen.`,
+    });
+  }
+  if (metrics.diversificationScore < 65) {
+    findings.push({
+      type: "diversification",
+      severity: "medium",
+      affectedAssets: [],
+      message: `Der Diversifikationswert liegt bei ${metrics.diversificationScore.toFixed(
+        0,
+      )} von 100. Eine breitere Streuung sollte geprueft werden.`,
+    });
+  }
+  if (metrics.volatility >= 0.2) {
+    findings.push({
+      type: "volatility",
+      severity: "medium",
+      affectedAssets: [],
+      message: `Die historische Volatilitaet von ${formatPercent(metrics.volatility)} weist auf spuerbare Schwankungen hin.`,
+    });
+  }
+  findings.push({
+    type: "behavioral",
+    severity: "low",
+    affectedAssets: [],
+    message:
+      "Behavioral-Finance-Hinweis: Historische Renditen und bekannte Namen sollten nicht als sichere Zukunftserwartung verstanden werden.",
+  });
+  return findings;
+}
+
+function getRiskFindingTitle(finding: ApiRiskFinding) {
+  const titles: Record<ApiRiskFinding["type"], string> = {
+    concentration: "Konzentration",
+    correlation: "Hohe Korrelation",
+    diversification: "Diversifikation",
+    volatility: "Volatilitaet",
+    risk_return: "Rendite-Risiko",
+    allocation: "Asset Allocation",
+    behavioral: "Behavioral Finance",
+  };
+  return titles[finding.type];
+}
+
+function getVisibleRiskFindings(findings: ApiRiskFinding[]) {
+  const behavioral = findings.find((finding) => finding.type === "behavioral");
+  const primary = findings.find((finding) => finding.type !== "behavioral");
+  return [primary, behavioral].filter((finding): finding is ApiRiskFinding => Boolean(finding)).slice(0, 2);
 }
 
 function addYears(date: Date, years: number) {

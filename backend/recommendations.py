@@ -66,9 +66,14 @@ def _fallback_response(analysis: dict[str, Any], model_name: str) -> RecommendRe
             optimized_weights,
         )
 
+    behavioral_message = _behavioral_message(analysis)
+    visible_recommendations = recommendations[:4]
+    if behavioral_message and behavioral_message not in visible_recommendations:
+        visible_recommendations.append(behavioral_message)
+
     return RecommendResponse(
         recommendations=[
-            *recommendations[:4],
+            *visible_recommendations,
             "Ollama ist aktuell nicht erreichbar; diese Hinweise stammen aus der regelbasierten Fallback-Logik.",
         ],
         source="rules",
@@ -77,10 +82,22 @@ def _fallback_response(analysis: dict[str, Any], model_name: str) -> RecommendRe
     )
 
 
+def _behavioral_message(analysis: dict[str, Any]) -> str | None:
+    findings = analysis.get("riskFindings", [])
+    if not isinstance(findings, list):
+        return None
+    for finding in findings:
+        if isinstance(finding, dict) and finding.get("type") == "behavioral":
+            return str(finding.get("message", "")).strip() or None
+    return None
+
+
 def _build_prompt(analysis: dict[str, Any]) -> str:
     metrics = analysis.get("metrics", {})
     optimized = analysis.get("optimizedMetrics", {})
     assets = analysis.get("assets", [])
+    allocation = analysis.get("assetAllocation", {})
+    risk_findings = analysis.get("riskFindings", [])
     source = analysis.get("dataSource", "Yahoo Finance via yfinance")
 
     return f"""
@@ -93,9 +110,11 @@ Aktuelles Portfolio: {assets}
 Kennzahlen aktuell: {metrics}
 Kennzahlen optimiert: {optimized}
 Optimierte Gewichte: {analysis.get("optimizedWeights", [])}
+Asset Allocation: {allocation}
+Regelbasierte Auffaelligkeiten: {risk_findings}
 
-Formuliere exakt vier kurze deutsche Bulletpoints.
-Jeder Bulletpoint soll konkret sein und eine Kennzahl oder Gewichtung nennen.
+Formuliere exakt fuenf kurze deutsche Bulletpoints.
+Jeder Bulletpoint soll konkret sein und eine Kennzahl, Gewichtung, Auffaelligkeit oder Behavioral-Finance-Beobachtung nennen.
 Erklaere, dass die KI die Quant-Ergebnisse interpretiert und die Optimierung nicht ersetzt.
 """.strip()
 

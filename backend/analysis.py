@@ -13,19 +13,23 @@ try:
     from .models import (
         AnalysisResponse,
         AnalyzeRequest,
+        AssetAllocation,
         AssetResult,
         CorrelationMatrix,
         FrontierPoint,
         PortfolioMetrics,
+        RiskFinding,
     )
 except ImportError:
     from models import (
         AnalysisResponse,
         AnalyzeRequest,
+        AssetAllocation,
         AssetResult,
         CorrelationMatrix,
         FrontierPoint,
         PortfolioMetrics,
+        RiskFinding,
     )
 
 
@@ -33,6 +37,19 @@ DISCLAIMER = (
     "Dies ist keine Anlageberatung. Die Analyse basiert auf historischen Yahoo-Finance-Daten "
     "ueber yfinance und bietet keine Prognosegarantie."
 )
+
+SECURITY_METADATA: dict[str, dict[str, str]] = {
+    "AAPL": {"assetClass": "Stock", "sector": "Technology", "region": "USA"},
+    "MSFT": {"assetClass": "Stock", "sector": "Technology", "region": "USA"},
+    "SPY": {"assetClass": "ETF", "sector": "Broad Market", "region": "USA"},
+    "AGG": {"assetClass": "ETF", "sector": "Bonds", "region": "USA"},
+    "TLT": {"assetClass": "ETF", "sector": "Government Bonds", "region": "USA"},
+    "IEFA": {"assetClass": "ETF", "sector": "Broad Market", "region": "Developed Markets"},
+    "QQQ": {"assetClass": "ETF", "sector": "Technology", "region": "USA"},
+    "VTI": {"assetClass": "ETF", "sector": "Broad Market", "region": "USA"},
+    "VEA": {"assetClass": "ETF", "sector": "Broad Market", "region": "Developed Markets"},
+    "BND": {"assetClass": "ETF", "sector": "Bonds", "region": "USA"},
+}
 
 
 def run_analysis(request: AnalyzeRequest) -> AnalysisResponse:
@@ -62,6 +79,15 @@ def run_analysis(request: AnalyzeRequest) -> AnalysisResponse:
     frontier = _build_frontier(mean_returns, covariance, request.risk_free_rate, weights, optimized_weights)
     performance = _build_performance(prices, weights, optimized_weights)
     asset_results = _build_asset_results(request.tickers, weights, mean_returns, covariance, prices)
+    asset_allocation = _build_asset_allocation(request.tickers, weights)
+    risk_findings = _build_risk_findings(
+        request.tickers,
+        weights,
+        correlation,
+        current_metrics,
+        optimized_metrics,
+        asset_allocation,
+    )
 
     return AnalysisResponse(
         mode="live",
@@ -76,6 +102,8 @@ def run_analysis(request: AnalyzeRequest) -> AnalysisResponse:
         metrics=current_metrics,
         optimizedMetrics=optimized_metrics,
         optimizedWeights=[float(value) for value in optimized_weights],
+        assetAllocation=asset_allocation,
+        riskFindings=risk_findings,
         correlationMatrix=CorrelationMatrix(
             tickers=request.tickers,
             values=_matrix_to_lists(correlation),
@@ -89,6 +117,7 @@ def run_analysis(request: AnalyzeRequest) -> AnalysisResponse:
             current_metrics.model_dump(by_alias=True),
             optimized_metrics.model_dump(by_alias=True),
             optimized_weights,
+            risk_findings,
         ),
         recommendationSource="rules",
         disclaimer=DISCLAIMER,
@@ -101,6 +130,7 @@ def build_rule_recommendations(
     metrics: dict[str, float],
     optimized_metrics: dict[str, float],
     optimized_weights: np.ndarray | list[float],
+    risk_findings: list[RiskFinding] | None = None,
 ) -> list[str]:
     weight_array = np.array(weights, dtype=float)
     optimized_array = np.array(optimized_weights, dtype=float)
@@ -109,7 +139,7 @@ def build_rule_recommendations(
     sharpe_delta = optimized_metrics["sharpeRatio"] - metrics["sharpeRatio"]
     risk_change = optimized_metrics["volatility"] - metrics["volatility"]
 
-    return [
+    recommendations = [
         (
             f"Die groesste Einzelposition ist {tickers[dominant_index]} mit "
             f"{weight_array[dominant_index] * 100:.1f} Prozent. Pruefe, ob diese Konzentration "
@@ -128,6 +158,136 @@ def build_rule_recommendations(
             "fuer den betrachteten Zeitraum. Dieser Wert ist ein historisches Risikomass, keine Verlustgrenze."
         ),
     ]
+    if risk_findings:
+        behavioral = next((finding for finding in risk_findings if finding.type == "behavioral"), None)
+        if behavioral:
+            recommendations.append(behavioral.message)
+    return recommendations
+
+
+def _build_asset_allocation(tickers: list[str], weights: np.ndarray) -> AssetAllocation:
+    by_security = {ticker: round(float(weights[index]), 6) for index, ticker in enumerate(tickers)}
+    by_asset_class: dict[str, float] = {}
+    by_sector: dict[str, float] = {}
+    by_region: dict[str, float] = {}
+
+    for index, ticker in enumerate(tickers):
+        metadata = SECURITY_METADATA.get(
+            ticker,
+            {"assetClass": "Unknown", "sector": "Unknown", "region": "Unknown"},
+        )
+        weight = float(weights[index])
+        _add_weight(by_asset_class, metadata["assetClass"], weight)
+        _add_weight(by_sector, metadata["sector"], weight)
+        _add_weight(by_region, metadata["region"], weight)
+
+    return AssetAllocation(
+        bySecurity=by_security,
+        byAssetClass=_round_weight_map(by_asset_class),
+        bySector=_round_weight_map(by_sector),
+        byRegion=_round_weight_map(by_region),
+    )
+
+
+def _build_risk_findings(
+    tickers: list[str],
+    weights: np.ndarray,
+    correlation: pd.DataFrame,
+    metrics: PortfolioMetrics,
+    optimized_metrics: PortfolioMetrics,
+    allocation: AssetAllocation,
+) -> list[RiskFinding]:
+    findings: list[RiskFinding] = []
+    max_weight_index = int(np.argmax(weights))
+    max_weight = float(weights[max_weight_index])
+    if max_weight >= 0.35:
+        findings.append(
+            RiskFinding(
+                type="concentration",
+                severity="high" if max_weight >= 0.5 else "medium",
+                affectedAssets=[tickers[max_weight_index]],
+                message=(
+                    f"{tickers[max_weight_index]} macht {max_weight * 100:.1f} Prozent des Portfolios aus. "
+                    "Das kann zu einer starken Abhaengigkeit von einer Einzelposition fuehren."
+                ),
+            )
+        )
+
+    high_corr_pairs = _high_correlation_pairs(correlation)
+    if high_corr_pairs:
+        pair_text = ", ".join(f"{left}/{right}" for left, right in high_corr_pairs[:3])
+        findings.append(
+            RiskFinding(
+                type="correlation",
+                severity="medium",
+                affectedAssets=sorted({ticker for pair in high_corr_pairs for ticker in pair}),
+                message=(
+                    f"Mehrere Positionen bewegen sich historisch stark gemeinsam ({pair_text}). "
+                    "Scheinbare Streuung kann dadurch geringer wirken als erwartet."
+                ),
+            )
+        )
+
+    if metrics.diversification_score < 55:
+        findings.append(
+            RiskFinding(
+                type="diversification",
+                severity="medium",
+                message=(
+                    f"Der Diversifikationswert liegt bei {metrics.diversification_score:.1f} von 100. "
+                    "Das Portfolio ist daher nur begrenzt breit gestreut."
+                ),
+            )
+        )
+
+    if metrics.volatility >= 0.25:
+        findings.append(
+            RiskFinding(
+                type="volatility",
+                severity="high" if metrics.volatility >= 0.35 else "medium",
+                message=(
+                    f"Die annualisierte Volatilitaet liegt bei {metrics.volatility * 100:.1f} Prozent. "
+                    "Das weist auf deutliche historische Schwankungen hin."
+                ),
+            )
+        )
+
+    if metrics.sharpe_ratio < 0.5:
+        findings.append(
+            RiskFinding(
+                type="risk_return",
+                severity="medium",
+                message=(
+                    f"Die Sharpe Ratio von {metrics.sharpe_ratio:.2f} ist niedrig. "
+                    "Die historische Rendite war im Verhaeltnis zum Risiko begrenzt."
+                ),
+            )
+        )
+
+    dominant_sector = _dominant_allocation(allocation.by_sector)
+    if dominant_sector and dominant_sector[1] >= 0.6 and dominant_sector[0] != "Unknown":
+        findings.append(
+            RiskFinding(
+                type="allocation",
+                severity="medium",
+                message=(
+                    f"{dominant_sector[1] * 100:.1f} Prozent des Portfolios entfallen auf {dominant_sector[0]}. "
+                    "Das kann ein Branchen- oder Themenschwerpunkt sein."
+                ),
+            )
+        )
+
+    findings.append(
+        RiskFinding(
+            type="behavioral",
+            severity="low",
+            message=(
+                "Behavioral-Finance-Hinweis: Historische Renditen sollten nicht als sichere Erwartung verstanden "
+                "werden. Vermeide ein falsches Sicherheitsgefuehl durch bekannte Namen oder kurzfristige Gewinne."
+            ),
+        )
+    )
+    return findings
 
 
 def _download_prices(request: AnalyzeRequest) -> pd.DataFrame:
@@ -356,3 +516,31 @@ def _matrix_to_lists(matrix: pd.DataFrame) -> list[list[float]]:
 def _diversification_score(weights: np.ndarray) -> float:
     herfindahl = float(np.sum(weights * weights))
     return max(0.0, min(100.0, (1 - herfindahl) * 140))
+
+
+def _add_weight(target: dict[str, float], key: str, weight: float) -> None:
+    target[key] = target.get(key, 0.0) + weight
+
+
+def _round_weight_map(values: dict[str, float]) -> dict[str, float]:
+    return {key: round(float(value), 6) for key, value in sorted(values.items())}
+
+
+def _dominant_allocation(values: dict[str, float]) -> tuple[str, float] | None:
+    if not values:
+        return None
+    key = max(values, key=values.get)
+    return key, float(values[key])
+
+
+def _high_correlation_pairs(correlation: pd.DataFrame, threshold: float = 0.75) -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = []
+    tickers = [str(ticker) for ticker in correlation.columns]
+    for row_index, left in enumerate(tickers):
+        for column_index, right in enumerate(tickers):
+            if column_index <= row_index:
+                continue
+            value = float(correlation.iloc[row_index, column_index])
+            if value >= threshold:
+                pairs.append((left, right))
+    return pairs
