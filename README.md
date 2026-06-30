@@ -73,3 +73,32 @@ Die aktuelle Version kann echte Daten ueber das lokale Backend laden. Der Demo-M
 - `POST /api/export/pdf`
 
 Die Analyse basiert auf historischen Daten. Sie ist keine Anlageberatung und keine Prognose.
+
+## DigitalOcean App Platform
+
+Das Backend nutzt `uv`. DigitalOcean App Platform erwartet dafuer neben `pyproject.toml`
+und `uv.lock` auch eine `.python-version` Datei. Diese ist auf Python `3.11.15`
+gesetzt; `runtime.txt` ist als Buildpack-Fallback ebenfalls vorhanden.
+
+Empfohlene Backend-Komponente:
+
+```text
+Type: Web Service
+Source directory: /
+Build command: uv sync --frozen
+Run command: uv run uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8080}
+HTTP port: 8080
+```
+
+Empfohlene Frontend-Komponente:
+
+```text
+Type: Static Site
+Source directory: /
+Build command: npm ci && npm run build
+Output directory: dist
+Environment variable: VITE_API_BASE_URL=https://<backend-app-url>
+```
+
+Wenn Frontend und Backend als getrennte App-Platform-Komponenten laufen, muss
+`VITE_API_BASE_URL` auf die oeffentliche URL des Backend-Service zeigen.
