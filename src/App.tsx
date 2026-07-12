@@ -264,7 +264,7 @@ function App() {
   const activeRiskFindings = analysis?.riskFindings ?? demoRiskFindings;
   const activeCorrelationMatrix = analysis?.correlationMatrix.values ?? buildFallbackCorrelationMatrix(assets);
   const activeSectorAllocation = analysis?.sectorAllocation ?? buildFallbackSectorAllocation(displayAssets, activeWeights);
-  const isLive = Boolean(analysis);
+  const isLive = analysis?.mode === "live";
   const canOpenAiWorkspace = Boolean(analysis);
   const isSearchOpen = searchRowIndex !== null;
   const weightSum = assets.reduce((sum, asset) => sum + Number(asset.weight || 0), 0);
@@ -1515,7 +1515,7 @@ function App() {
 
             <div className="search-helper-row">
               <span>Aktuelle Zeile: Position {(searchRowIndex ?? 0) + 1}</span>
-              <span>Datenquelle: Yahoo Finance via yfinance</span>
+              <span>Datenquelle: Lokaler Schnellkatalog + Yahoo Finance</span>
             </div>
 
             {searchError ? <div className="notice error">{searchError}</div> : null}

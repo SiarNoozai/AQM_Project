@@ -1,3 +1,5 @@
+import { createId } from "../lib/id";
+
 export type AssetInput = {
   id: string;
   ticker: string;
@@ -125,7 +127,7 @@ export const initialAssets: AssetInput[] = suggestedAssetCatalog
 export function createAssetInput(seed: Partial<Omit<AssetInput, "id">> = {}, index = 0): AssetInput {
   const color = seed.color ?? assetPalette[index % assetPalette.length];
   return {
-    id: crypto.randomUUID(),
+    id: createId(),
     ticker: seed.ticker?.toUpperCase() ?? "",
     name: seed.name ?? "Neue Position",
     weight: seed.weight ?? 0,

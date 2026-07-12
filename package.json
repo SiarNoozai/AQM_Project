@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "bash ./start-dev.sh",
     "dev:frontend": "vite --host 127.0.0.1",
-    "dev:backend": "cd backend && ./.venv/bin/python -m uvicorn main:app --reload --host 127.0.0.1 --port 8000",
+    "dev:backend": "cd backend && ./.venv/bin/python -m uvicorn main:app --host 127.0.0.1 --port 8000",
+    "dev:backend:reload": "cd backend && ./.venv/bin/python -m uvicorn main:app --reload --host 127.0.0.1 --port 8000",
     "build": "tsc && vite build",
     "preview": "vite preview --host 127.0.0.1"
   },

@@ -4,7 +4,6 @@ import os
 from dataclasses import dataclass
 
 import httpx
-import yfinance as yf
 
 
 ALPHA_VANTAGE_API_KEY = os.getenv("ALPHA_VANTAGE_API_KEY", "").strip()
@@ -42,15 +41,41 @@ PROFILE_FALLBACKS: dict[str, AssetProfile] = {
     "XLP": AssetProfile("Consumer Staples Select Sector SPDR Fund", "Consumer Staples", "ETF"),
     "XLU": AssetProfile("Utilities Select Sector SPDR Fund", "Utilities", "ETF"),
     "XLE": AssetProfile("Energy Select Sector SPDR Fund", "Energy", "ETF"),
+    "JNJ": AssetProfile("Johnson & Johnson", "Health Care", "EQUITY"),
+    "JPM": AssetProfile("JPMorgan Chase", "Financial Services", "EQUITY"),
+    "CAT": AssetProfile("Caterpillar", "Industrials", "EQUITY"),
+    "PG": AssetProfile("Procter & Gamble", "Consumer Staples", "EQUITY"),
+    "NEE": AssetProfile("NextEra Energy", "Utilities", "EQUITY"),
+    "XOM": AssetProfile("Exxon Mobil", "Energy", "EQUITY"),
+    "PLD": AssetProfile("Prologis", "Real Estate", "EQUITY"),
+    "VEA": AssetProfile("Vanguard FTSE Developed Markets ETF", "International Equities", "ETF"),
+    "LLY": AssetProfile("Eli Lilly", "Health Care", "EQUITY"),
+    "SMH": AssetProfile("VanEck Semiconductor ETF", "Information Technology", "ETF"),
 }
 
 
-def fetch_asset_profiles(tickers: list[str]) -> dict[str, AssetProfile]:
-    return {ticker: _fetch_asset_profile(ticker) for ticker in tickers}
+def _get_yfinance():
+    try:
+        import yfinance as yf
+    except Exception:
+        return None
+
+    return yf
 
 
-def _fetch_asset_profile(ticker: str) -> AssetProfile:
+def fetch_asset_profiles(tickers: list[str], live: bool = False) -> dict[str, AssetProfile]:
+    return {ticker: _fetch_asset_profile(ticker, live=live) for ticker in tickers}
+
+
+def _fetch_asset_profile(ticker: str, live: bool = False) -> AssetProfile:
     fallback = PROFILE_FALLBACKS.get(ticker, AssetProfile(ticker, "Unbekannt", "EQUITY"))
+    if not live:
+        return fallback
+
+    yf = _get_yfinance()
+    if yf is None:
+        return fallback
+
     try:
         info = yf.Ticker(ticker).info or {}
     except Exception:

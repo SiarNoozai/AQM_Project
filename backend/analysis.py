@@ -1,12 +1,11 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import numpy as np
 import pandas as pd
-import yfinance as yf
 from fastapi import HTTPException
-from scipy.optimize import minimize
 
 try:
     from .market_intelligence import fetch_asset_profiles
@@ -38,19 +37,91 @@ DISCLAIMER = (
     "Dies ist keine Anlageberatung. Die Analyse basiert auf historischen Yahoo-Finance-Daten "
     "ueber yfinance und bietet keine Prognosegarantie."
 )
+DEMO_DATA_SOURCE = "Lokale Demo-Daten (Live-Marktdaten waren nicht rechtzeitig verfuegbar)"
+DEMO_DISCLAIMER_SUFFIX = " Fuer diese Auswertung wurden lokale Demo-Annahmen statt Live-Daten verwendet."
+
+
+@dataclass(frozen=True)
+class DemoAssetAssumption:
+    expected_return: float
+    volatility: float
+    last_price: float
+
+
+DEFAULT_DEMO_ASSET = DemoAssetAssumption(expected_return=0.08, volatility=0.19, last_price=100.0)
+DEMO_ASSET_ASSUMPTIONS: dict[str, DemoAssetAssumption] = {
+    "AAPL": DemoAssetAssumption(0.148, 0.255, 212.0),
+    "MSFT": DemoAssetAssumption(0.132, 0.218, 468.0),
+    "SPY": DemoAssetAssumption(0.091, 0.152, 548.0),
+    "AGG": DemoAssetAssumption(0.037, 0.062, 99.0),
+    "QQQ": DemoAssetAssumption(0.118, 0.209, 486.0),
+    "VTI": DemoAssetAssumption(0.086, 0.148, 285.0),
+    "BND": DemoAssetAssumption(0.034, 0.058, 72.0),
+    "VNQ": DemoAssetAssumption(0.071, 0.173, 84.0),
+    "IEFA": DemoAssetAssumption(0.074, 0.141, 78.0),
+    "TLT": DemoAssetAssumption(0.041, 0.108, 93.0),
+    "GOOG": DemoAssetAssumption(0.121, 0.232, 182.0),
+    "GOOGL": DemoAssetAssumption(0.121, 0.232, 182.0),
+    "META": DemoAssetAssumption(0.139, 0.274, 516.0),
+    "AMZN": DemoAssetAssumption(0.116, 0.247, 191.0),
+    "NVDA": DemoAssetAssumption(0.178, 0.382, 128.0),
+    "TSLA": DemoAssetAssumption(0.143, 0.401, 244.0),
+    "P911.DE": DemoAssetAssumption(0.089, 0.241, 71.0),
+    "XLV": DemoAssetAssumption(0.075, 0.146, 144.0),
+    "XLF": DemoAssetAssumption(0.071, 0.171, 46.0),
+    "XLI": DemoAssetAssumption(0.079, 0.168, 132.0),
+    "XLP": DemoAssetAssumption(0.055, 0.112, 78.0),
+    "XLU": DemoAssetAssumption(0.049, 0.129, 70.0),
+    "XLE": DemoAssetAssumption(0.082, 0.221, 94.0),
+    "JNJ": DemoAssetAssumption(0.068, 0.152, 162.0),
+    "JPM": DemoAssetAssumption(0.087, 0.231, 211.0),
+    "CAT": DemoAssetAssumption(0.084, 0.244, 338.0),
+    "PG": DemoAssetAssumption(0.057, 0.118, 168.0),
+    "NEE": DemoAssetAssumption(0.061, 0.164, 76.0),
+    "XOM": DemoAssetAssumption(0.079, 0.233, 115.0),
+    "PLD": DemoAssetAssumption(0.073, 0.192, 121.0),
+    "VEA": DemoAssetAssumption(0.069, 0.137, 53.0),
+    "LLY": DemoAssetAssumption(0.124, 0.226, 912.0),
+    "SMH": DemoAssetAssumption(0.118, 0.258, 270.0),
+}
+
+
+def _get_yfinance():
+    try:
+        import yfinance as yf
+    except Exception as exc:  # pragma: no cover - depends on local environment
+        raise HTTPException(
+            status_code=503,
+            detail="Das Marktdaten-Modul konnte nicht geladen werden. Bitte starte das Backend neu.",
+        ) from exc
+
+    return yf
 
 
 def run_analysis(request: AnalyzeRequest) -> AnalysisResponse:
-    prices = _download_prices(request)
-    returns = _calculate_returns(prices, request.frequency)
-    if returns.empty or len(returns) < 10:
-        raise HTTPException(
-            status_code=422,
-            detail="Nicht genug Kursdaten fuer eine belastbare Analyse gefunden.",
-        )
+    weights = _normalize_weights(np.array(request.weights, dtype=float))
+    mode = "live"
+    data_source = "Yahoo Finance via yfinance"
+    disclaimer = DISCLAIMER
+
+    try:
+        prices = _download_prices(request)
+        returns = _calculate_returns(prices, request.frequency)
+        if returns.empty or len(returns) < 10:
+            raise HTTPException(
+                status_code=422,
+                detail="Nicht genug Kursdaten fuer eine belastbare Analyse gefunden.",
+            )
+    except HTTPException as exc:
+        if not _should_use_demo_fallback(exc):
+            raise
+        prices = _build_demo_prices(request)
+        returns = _calculate_returns(prices, request.frequency)
+        mode = "demo"
+        data_source = DEMO_DATA_SOURCE
+        disclaimer = f"{DISCLAIMER}{DEMO_DISCLAIMER_SUFFIX}"
 
     profiles = fetch_asset_profiles(request.tickers)
-    weights = _normalize_weights(np.array(request.weights, dtype=float))
     annual_factor = _annualization_factor(request.frequency)
     mean_returns = returns.mean() * annual_factor
     covariance = returns.cov() * annual_factor
@@ -72,8 +143,8 @@ def run_analysis(request: AnalyzeRequest) -> AnalysisResponse:
     risk_findings = _build_risk_findings(request.tickers, weights, correlation, current_metrics, optimized_metrics)
 
     return AnalysisResponse(
-        mode="live",
-        dataSource="Yahoo Finance via yfinance",
+        mode=mode,
+        dataSource=data_source,
         updatedAt=datetime.now(timezone.utc),
         startDate=request.start_date,
         endDate=request.end_date,
@@ -102,7 +173,7 @@ def run_analysis(request: AnalyzeRequest) -> AnalysisResponse:
             risk_findings,
         ),
         recommendationSource="rules",
-        disclaimer=DISCLAIMER,
+        disclaimer=disclaimer,
     )
 
 
@@ -222,6 +293,7 @@ def _build_risk_findings(
 
 
 def _download_prices(request: AnalyzeRequest) -> pd.DataFrame:
+    yf = _get_yfinance()
     try:
         data = yf.download(
             tickers=request.tickers,
@@ -231,7 +303,8 @@ def _download_prices(request: AnalyzeRequest) -> pd.DataFrame:
             auto_adjust=True,
             progress=False,
             group_by="column",
-            threads=True,
+            threads=False,
+            timeout=6,
         )
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Kursdaten konnten nicht geladen werden: {exc}") from exc
@@ -247,6 +320,47 @@ def _download_prices(request: AnalyzeRequest) -> pd.DataFrame:
     if prices.shape[1] != len(request.tickers):
         raise HTTPException(status_code=422, detail="Nicht fuer alle Ticker liegen verwertbare Kursdaten vor.")
     return prices[request.tickers]
+
+
+def _should_use_demo_fallback(error: HTTPException) -> bool:
+    if error.status_code >= 500:
+        return True
+
+    detail = str(error.detail).lower()
+    return "keine kursdaten" in detail or "nicht genug kursdaten" in detail
+
+
+def _build_demo_prices(request: AnalyzeRequest) -> pd.DataFrame:
+    end_timestamp = pd.Timestamp(request.end_date)
+    index = pd.bdate_range(start=request.start_date, end=request.end_date)
+    if len(index) < 60:
+        index = pd.bdate_range(end=end_timestamp, periods=60)
+
+    market_cycle = np.linspace(0, 4 * np.pi, len(index))
+    market_wave = np.sin(market_cycle) * 0.0028
+    macro_wave = np.cos(market_cycle * 0.45) * 0.0012
+    data: dict[str, np.ndarray] = {}
+
+    for ticker in request.tickers:
+        assumption = DEMO_ASSET_ASSUMPTIONS.get(ticker, DEFAULT_DEMO_ASSET)
+        seed = (sum(ord(char) for char in ticker) % 13) + 1
+        annual_return = assumption.expected_return
+        annual_volatility = assumption.volatility
+        daily_return = annual_return / 252
+        daily_volatility = annual_volatility / np.sqrt(252)
+
+        asset_cycle = np.linspace(0, (seed + 3) * np.pi, len(index))
+        asset_wave = np.sin(asset_cycle) * daily_volatility * 0.55
+        secondary_wave = np.cos(asset_cycle * 0.63) * daily_volatility * 0.28
+        drift = np.linspace(-0.0003, 0.0007, len(index))
+        returns = daily_return + market_wave + macro_wave + asset_wave + secondary_wave + drift
+        clipped_returns = np.clip(returns, -0.085, 0.085)
+
+        price_path = 100 * np.cumprod(1 + clipped_returns)
+        scaled_path = price_path * (assumption.last_price / price_path[-1])
+        data[ticker] = scaled_path
+
+    return pd.DataFrame(data, index=index)
 
 
 def _extract_close_prices(data: pd.DataFrame, tickers: list[str]) -> pd.DataFrame:
@@ -319,6 +433,9 @@ def _metrics(
 
 
 def _optimize_max_sharpe(mean_returns: pd.Series, covariance: pd.DataFrame, risk_free_rate: float) -> np.ndarray:
+    # SciPy is only needed for optimization requests; importing it lazily keeps API startup responsive.
+    from scipy.optimize import minimize
+
     asset_count = len(mean_returns)
     initial = np.repeat(1 / asset_count, asset_count)
     bounds = tuple((0.0, 1.0) for _ in range(asset_count))

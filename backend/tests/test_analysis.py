@@ -5,12 +5,14 @@ import asyncio
 import numpy as np
 import pandas as pd
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from analysis import _build_sector_allocation, _calculate_returns, _metrics, _normalize_weights
+from analysis import _build_sector_allocation, _calculate_returns, _metrics, _normalize_weights, run_analysis
 from main import app
 from models import AnalyzeRequest, AssetResult, RecommendRequest
 from recommendations import build_rule_recommendation_response
+from search import search_securities
 
 
 def test_calculate_returns_daily() -> None:
@@ -169,3 +171,34 @@ def test_api_health_and_validation_error() -> None:
     )
 
     assert response.status_code == 422
+
+
+def test_search_securities_returns_local_catalog_results() -> None:
+    response = search_securities("Apple", 5)
+
+    assert response.results
+    assert response.results[0].symbol == "AAPL"
+
+
+def test_run_analysis_falls_back_to_demo_when_live_download_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    request = AnalyzeRequest(
+        tickers=["AAPL", "MSFT", "SPY", "AGG"],
+        weights=[35, 30, 25, 10],
+        startDate="2021-01-01",
+        endDate="2024-01-01",
+        frequency="1d",
+        riskFreeRate=0.02,
+        varConfidence=0.95,
+    )
+
+    def fail_download(_: AnalyzeRequest) -> pd.DataFrame:
+        raise HTTPException(status_code=502, detail="Yahoo langsam")
+
+    monkeypatch.setattr("analysis._download_prices", fail_download)
+
+    response = run_analysis(request)
+
+    assert response.mode == "demo"
+    assert "Demo-Daten" in response.data_source
+    assert len(response.assets) == 4
+    assert response.performance

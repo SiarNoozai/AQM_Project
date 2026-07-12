@@ -36,7 +36,7 @@ export type ApiSectorAllocation = {
 };
 
 export type ApiAnalysis = {
-  mode: "live";
+  mode: "live" | "demo";
   dataSource: string;
   updatedAt: string;
   startDate: string;
@@ -139,13 +139,15 @@ export type SecuritySearchResponse = {
 };
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "";
+const REQUEST_TIMEOUT_MS = 10000;
+const SEARCH_TIMEOUT_MS = 2500;
 
 export async function analyzePortfolio(payload: AnalyzePayload) {
-  return postJson<ApiAnalysis>("/api/analyze", payload);
+  return postJson<ApiAnalysis>("/api/analyze", payload, REQUEST_TIMEOUT_MS);
 }
 
 export async function recommendPortfolio(payload: RecommendPayload) {
-  return postJson<RecommendationResult>("/api/recommend", payload);
+  return postJson<RecommendationResult>("/api/recommend", payload, REQUEST_TIMEOUT_MS);
 }
 
 export async function searchSecurities(query: string, limit = 8) {
@@ -153,17 +155,17 @@ export async function searchSecurities(query: string, limit = 8) {
     q: query,
     limit: String(limit),
   });
-  return getJson<SecuritySearchResponse>(`/api/securities/search?${params.toString()}`);
+  return getJson<SecuritySearchResponse>(`/api/securities/search?${params.toString()}`, SEARCH_TIMEOUT_MS);
 }
 
-async function postJson<T>(path: string, payload: unknown): Promise<T> {
+async function postJson<T>(path: string, payload: unknown, timeoutMs: number): Promise<T> {
   const response = await request(`${API_BASE_URL}${path}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
     body: JSON.stringify(payload),
-  });
+  }, timeoutMs);
 
   if (!response.ok) {
     throw new Error(await readApiError(response));
@@ -172,8 +174,8 @@ async function postJson<T>(path: string, payload: unknown): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-async function getJson<T>(path: string): Promise<T> {
-  const response = await request(`${API_BASE_URL}${path}`);
+async function getJson<T>(path: string, timeoutMs: number): Promise<T> {
+  const response = await request(`${API_BASE_URL}${path}`, undefined, timeoutMs);
 
   if (!response.ok) {
     throw new Error(await readApiError(response));
@@ -182,16 +184,27 @@ async function getJson<T>(path: string): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-async function request(input: RequestInfo | URL, init?: RequestInit) {
+async function request(input: RequestInfo | URL, init?: RequestInit, timeoutMs = REQUEST_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+
   try {
-    return await fetch(input, init);
+    return await fetch(input, {
+      ...init,
+      signal: controller.signal,
+    });
   } catch (caughtError) {
+    if (caughtError instanceof DOMException && caughtError.name === "AbortError") {
+      throw new Error("Die Anfrage hat zu lange gedauert. Bitte versuche es erneut.");
+    }
     if (caughtError instanceof TypeError) {
       throw new Error(
         "Backend nicht erreichbar. Bitte starte das FastAPI-Backend auf Port 8000 neu oder nutze den Vite-Proxy.",
       );
     }
     throw caughtError;
+  } finally {
+    window.clearTimeout(timeoutId);
   }
 }
 

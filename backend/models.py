@@ -102,7 +102,7 @@ class CorrelationMatrix(BaseModel):
 class AnalysisResponse(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
-    mode: Literal["live"]
+    mode: Literal["live", "demo"]
     data_source: str = Field(alias="dataSource")
     updated_at: datetime = Field(alias="updatedAt")
     start_date: date = Field(alias="startDate")
