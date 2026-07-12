@@ -1,19 +1,28 @@
 from __future__ import annotations
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 
 try:
     from .analysis import run_analysis
-    from .exports import create_csv_export, create_pdf_export
-    from .models import AnalyzeRequest, AskRequest, AskResponse, ExportRequest, RecommendRequest, RecommendResponse
-    from .recommendations import answer_question, generate_recommendations
+    from .models import AnalyzeRequest, ExportRequest, RecommendRequest, RecommendResponse, SecuritySearchResponse
+    from .recommendations import generate_recommendations
+    from .search import search_securities
 except ImportError:
     from analysis import run_analysis
-    from exports import create_csv_export, create_pdf_export
-    from models import AnalyzeRequest, AskRequest, AskResponse, ExportRequest, RecommendRequest, RecommendResponse
-    from recommendations import answer_question, generate_recommendations
+    from models import AnalyzeRequest, ExportRequest, RecommendRequest, RecommendResponse, SecuritySearchResponse
+    from recommendations import generate_recommendations
+    from search import search_securities
+
+try:
+    from .exports import create_csv_export, create_pdf_export
+except ImportError:
+    try:
+        from exports import create_csv_export, create_pdf_export
+    except ImportError:
+        create_csv_export = None
+        create_pdf_export = None
 
 
 app = FastAPI(title="Portfolio- und Risikoanalyse API", version="0.1.0")
@@ -32,6 +41,14 @@ def health() -> dict[str, str]:
     return {"status": "ok", "service": "portfolio-risk-analysis-api"}
 
 
+@app.get("/api/securities/search", response_model=SecuritySearchResponse)
+def search_market_securities(
+    q: str = Query("", min_length=0),
+    limit: int = Query(8, ge=1, le=10),
+) -> SecuritySearchResponse:
+    return search_securities(q, limit)
+
+
 @app.post("/api/analyze")
 def analyze(request: AnalyzeRequest):
     return run_analysis(request)
@@ -39,29 +56,25 @@ def analyze(request: AnalyzeRequest):
 
 @app.post("/api/recommend", response_model=RecommendResponse)
 async def recommend(request: RecommendRequest) -> RecommendResponse:
-    return await generate_recommendations(request.analysis, request.model)
+    return await generate_recommendations(request)
 
 
-@app.post("/api/ask", response_model=AskResponse)
-async def ask(request: AskRequest) -> AskResponse:
-    return await answer_question(request.analysis, request.question, request.model)
+if create_csv_export is not None and create_pdf_export is not None:
+    @app.post("/api/export/csv")
+    def export_csv(request: ExportRequest) -> Response:
+        csv_content = create_csv_export(request.analysis, request.recommendations)
+        return Response(
+            content=csv_content,
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": 'attachment; filename="portfolio-analyse.csv"'},
+        )
 
 
-@app.post("/api/export/csv")
-def export_csv(request: ExportRequest) -> Response:
-    csv_content = create_csv_export(request.analysis, request.recommendations)
-    return Response(
-        content=csv_content,
-        media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": 'attachment; filename="portfolio-analyse.csv"'},
-    )
-
-
-@app.post("/api/export/pdf")
-def export_pdf(request: ExportRequest) -> Response:
-    pdf_content = create_pdf_export(request.analysis, request.recommendations)
-    return Response(
-        content=pdf_content,
-        media_type="application/pdf",
-        headers={"Content-Disposition": 'attachment; filename="portfolio-analyse.pdf"'},
-    )
+    @app.post("/api/export/pdf")
+    def export_pdf(request: ExportRequest) -> Response:
+        pdf_content = create_pdf_export(request.analysis, request.recommendations)
+        return Response(
+            content=pdf_content,
+            media_type="application/pdf",
+            headers={"Content-Disposition": 'attachment; filename="portfolio-analyse.pdf"'},
+        )

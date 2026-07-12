@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-from statistics import NormalDist
+from datetime import datetime, timezone
 
 import numpy as np
 import pandas as pd
@@ -10,30 +9,28 @@ from fastapi import HTTPException
 from scipy.optimize import minimize
 
 try:
+    from .market_intelligence import fetch_asset_profiles
     from .models import (
         AnalysisResponse,
         AnalyzeRequest,
-        AssetAllocation,
         AssetResult,
         CorrelationMatrix,
         FrontierPoint,
         PortfolioMetrics,
         RiskFinding,
-        RiskContribution,
-        StrategyResult,
+        SectorAllocationItem,
     )
 except ImportError:
+    from market_intelligence import fetch_asset_profiles
     from models import (
         AnalysisResponse,
         AnalyzeRequest,
-        AssetAllocation,
         AssetResult,
         CorrelationMatrix,
         FrontierPoint,
         PortfolioMetrics,
         RiskFinding,
-        RiskContribution,
-        StrategyResult,
+        SectorAllocationItem,
     )
 
 
@@ -41,22 +38,6 @@ DISCLAIMER = (
     "Dies ist keine Anlageberatung. Die Analyse basiert auf historischen Yahoo-Finance-Daten "
     "ueber yfinance und bietet keine Prognosegarantie."
 )
-
-SECURITY_METADATA: dict[str, dict[str, str]] = {
-    "AAPL": {"assetClass": "Stock", "sector": "Technology", "region": "USA"},
-    "MSFT": {"assetClass": "Stock", "sector": "Technology", "region": "USA"},
-    "SPY": {"assetClass": "ETF", "sector": "Broad Market", "region": "USA"},
-    "AGG": {"assetClass": "ETF", "sector": "Bonds", "region": "USA"},
-    "TLT": {"assetClass": "ETF", "sector": "Government Bonds", "region": "USA"},
-    "IEFA": {"assetClass": "ETF", "sector": "Broad Market", "region": "Developed Markets"},
-    "QQQ": {"assetClass": "ETF", "sector": "Technology", "region": "USA"},
-    "VTI": {"assetClass": "ETF", "sector": "Broad Market", "region": "USA"},
-    "VEA": {"assetClass": "ETF", "sector": "Broad Market", "region": "Developed Markets"},
-    "BND": {"assetClass": "ETF", "sector": "Bonds", "region": "USA"},
-}
-
-CACHE_TTL = timedelta(hours=6)
-_PRICE_CACHE: dict[tuple[tuple[str, ...], str, str, str], tuple[datetime, pd.DataFrame]] = {}
 
 
 def run_analysis(request: AnalyzeRequest) -> AnalysisResponse:
@@ -68,12 +49,12 @@ def run_analysis(request: AnalyzeRequest) -> AnalysisResponse:
             detail="Nicht genug Kursdaten fuer eine belastbare Analyse gefunden.",
         )
 
+    profiles = fetch_asset_profiles(request.tickers)
     weights = _normalize_weights(np.array(request.weights, dtype=float))
     annual_factor = _annualization_factor(request.frequency)
     mean_returns = returns.mean() * annual_factor
     covariance = returns.cov() * annual_factor
     correlation = returns.corr()
-    risk_contributions = _risk_contributions(request.tickers, weights, covariance)
     current_metrics = _metrics(mean_returns, covariance, returns, weights, request.risk_free_rate, request.var_confidence)
     optimized_weights = _optimize_max_sharpe(mean_returns, covariance, request.risk_free_rate)
     optimized_metrics = _metrics(
@@ -86,26 +67,9 @@ def run_analysis(request: AnalyzeRequest) -> AnalysisResponse:
     )
     frontier = _build_frontier(mean_returns, covariance, request.risk_free_rate, weights, optimized_weights)
     performance = _build_performance(prices, weights, optimized_weights)
-    strategy_results = _build_strategy_results(
-        request.tickers,
-        weights,
-        mean_returns,
-        covariance,
-        returns,
-        request.risk_free_rate,
-        request.var_confidence,
-        optimized_weights,
-    )
-    asset_results = _build_asset_results(request.tickers, weights, mean_returns, covariance, prices, risk_contributions)
-    asset_allocation = _build_asset_allocation(request.tickers, weights)
-    risk_findings = _build_risk_findings(
-        request.tickers,
-        weights,
-        correlation,
-        current_metrics,
-        optimized_metrics,
-        asset_allocation,
-    )
+    asset_results = _build_asset_results(request.tickers, weights, mean_returns, covariance, prices, profiles)
+    sector_allocation = _build_sector_allocation(asset_results)
+    risk_findings = _build_risk_findings(request.tickers, weights, correlation, current_metrics, optimized_metrics)
 
     return AnalysisResponse(
         mode="live",
@@ -117,12 +81,11 @@ def run_analysis(request: AnalyzeRequest) -> AnalysisResponse:
         riskFreeRate=request.risk_free_rate,
         varConfidence=request.var_confidence,
         assets=asset_results,
+        sectorAllocation=sector_allocation,
         metrics=current_metrics,
         optimizedMetrics=optimized_metrics,
         optimizedWeights=[float(value) for value in optimized_weights],
-        assetAllocation=asset_allocation,
         riskFindings=risk_findings,
-        strategies=strategy_results,
         correlationMatrix=CorrelationMatrix(
             tickers=request.tickers,
             values=_matrix_to_lists(correlation),
@@ -157,66 +120,30 @@ def build_rule_recommendations(
     largest_shift_index = int(np.argmax(np.abs(optimized_array - weight_array)))
     sharpe_delta = optimized_metrics["sharpeRatio"] - metrics["sharpeRatio"]
     risk_change = optimized_metrics["volatility"] - metrics["volatility"]
+    main_finding = next(
+        (finding.message for finding in risk_findings or [] if finding.type in {"concentration", "correlation"}),
+        None,
+    )
 
-    recommendations = [
-        (
+    return [
+        main_finding
+        or (
             f"Die groesste Einzelposition ist {tickers[dominant_index]} mit "
             f"{weight_array[dominant_index] * 100:.1f} Prozent. Pruefe, ob diese Konzentration "
             "zu deinem Risikoprofil passt."
         ),
         (
-            f"Die Max-Sharpe-Optimierung verschiebt {tickers[largest_shift_index]} am staerksten "
-            f"auf {optimized_array[largest_shift_index] * 100:.1f} Prozent."
+            f"Eine datenbasierte Portfolioverbesserung waere, {tickers[largest_shift_index]} von "
+            f"{weight_array[largest_shift_index] * 100:.1f} Prozent auf "
+            f"{optimized_array[largest_shift_index] * 100:.1f} Prozent umzugewichten, "
+            "um die Gewichte breiter und nachvollziehbarer zu verteilen."
         ),
         (
-            f"Das optimierte Portfolio veraendert die Sharpe Ratio um {sharpe_delta:.2f} Punkte "
-            f"und die Volatilitaet um {risk_change * 100:+.1f} Prozentpunkte."
-        ),
-        (
-            f"Der historische Value at Risk liegt bei etwa {metrics['valueAtRisk'] * 100:.1f} Prozent "
-            "fuer den betrachteten Zeitraum. Dieser Wert ist ein historisches Risikomass, keine Verlustgrenze."
+            f"Diese Anpassung stuetzt sich auf die berechneten Kennzahlen: Die Sharpe Ratio veraendert sich um "
+            f"{sharpe_delta:.2f} Punkte und das Risiko um {risk_change * 100:+.1f} Prozentpunkte. "
+            "Die Empfehlung basiert nur auf historischen Analysedaten."
         ),
     ]
-    if risk_findings:
-        behavioral = next((finding for finding in risk_findings if finding.type == "behavioral"), None)
-        if behavioral:
-            recommendations.append(behavioral.message)
-    return recommendations
-
-
-def _build_asset_allocation(tickers: list[str], weights: np.ndarray) -> AssetAllocation:
-    by_security = {ticker: round(float(weights[index]), 6) for index, ticker in enumerate(tickers)}
-    by_asset_class: dict[str, float] = {}
-    by_sector: dict[str, float] = {}
-    by_region: dict[str, float] = {}
-
-    for index, ticker in enumerate(tickers):
-        metadata = _security_metadata(ticker)
-        weight = float(weights[index])
-        _add_weight(by_asset_class, metadata["assetClass"], weight)
-        _add_weight(by_sector, metadata["sector"], weight)
-        _add_weight(by_region, metadata["region"], weight)
-
-    return AssetAllocation(
-        bySecurity=by_security,
-        byAssetClass=_round_weight_map(by_asset_class),
-        bySector=_round_weight_map(by_sector),
-        byRegion=_round_weight_map(by_region),
-    )
-
-
-def _security_metadata(ticker: str) -> dict[str, str]:
-    if ticker in SECURITY_METADATA:
-        return {**SECURITY_METADATA[ticker], "metadataStatus": "known"}
-    if ticker.endswith((".DE", ".F")):
-        return {"assetClass": "Stock", "sector": "Unknown", "region": "Europe", "metadataStatus": "inferred"}
-    if ticker.endswith((".L", ".PA", ".AS")):
-        return {"assetClass": "Stock", "sector": "Unknown", "region": "Europe", "metadataStatus": "inferred"}
-    if ticker.endswith((".TO", ".V")):
-        return {"assetClass": "Stock", "sector": "Unknown", "region": "Canada", "metadataStatus": "inferred"}
-    if ticker.endswith(("ETF", "FUND")):
-        return {"assetClass": "ETF", "sector": "Unknown", "region": "Unknown", "metadataStatus": "inferred"}
-    return {"assetClass": "Unknown", "sector": "Unknown", "region": "Unknown", "metadataStatus": "unknown"}
 
 
 def _build_risk_findings(
@@ -225,127 +152,76 @@ def _build_risk_findings(
     correlation: pd.DataFrame,
     metrics: PortfolioMetrics,
     optimized_metrics: PortfolioMetrics,
-    allocation: AssetAllocation,
 ) -> list[RiskFinding]:
     findings: list[RiskFinding] = []
-    max_weight_index = int(np.argmax(weights))
-    max_weight = float(weights[max_weight_index])
-    if max_weight >= 0.35:
+    dominant_index = int(np.argmax(weights))
+    dominant_weight = float(weights[dominant_index])
+    if dominant_weight >= 0.30:
         findings.append(
             RiskFinding(
                 type="concentration",
-                severity="high" if max_weight >= 0.5 else "medium",
-                affectedAssets=[tickers[max_weight_index]],
+                severity="high" if dominant_weight >= 0.45 else "medium",
                 message=(
-                    f"{tickers[max_weight_index]} macht {max_weight * 100:.1f} Prozent des Portfolios aus. "
-                    "Das kann zu einer starken Abhaengigkeit von einer Einzelposition fuehren."
+                    f"{tickers[dominant_index]} ist mit {dominant_weight * 100:.1f} Prozent stark gewichtet. "
+                    "Das kann dein Portfolio anfaelliger fuer Einzelrisiken machen."
                 ),
             )
         )
 
-    high_corr_pairs = _high_correlation_pairs(correlation)
-    if high_corr_pairs:
-        pair_text = ", ".join(f"{left}/{right}" for left, right in high_corr_pairs[:3])
+    correlation_pairs = _high_correlation_pairs(correlation)
+    if correlation_pairs:
+        left, right = correlation_pairs[0]
         findings.append(
             RiskFinding(
                 type="correlation",
                 severity="medium",
-                affectedAssets=sorted({ticker for pair in high_corr_pairs for ticker in pair}),
                 message=(
-                    f"Mehrere Positionen bewegen sich historisch stark gemeinsam ({pair_text}). "
-                    "Scheinbare Streuung kann dadurch geringer wirken als erwartet."
+                    f"{left} und {right} bewegen sich historisch stark gemeinsam. "
+                    "Dadurch kann die Diversifikation geringer sein als sie auf den ersten Blick wirkt."
                 ),
             )
         )
 
-    if metrics.diversification_score < 55:
+    if metrics.diversification_score < 60:
         findings.append(
             RiskFinding(
                 type="diversification",
                 severity="medium",
                 message=(
                     f"Der Diversifikationswert liegt bei {metrics.diversification_score:.1f} von 100. "
-                    "Das Portfolio ist daher nur begrenzt breit gestreut."
+                    "Eine breitere Gewichtung koennte das Portfolio robuster machen."
                 ),
             )
         )
 
-    if metrics.volatility >= 0.25:
+    if metrics.volatility >= 0.24:
         findings.append(
             RiskFinding(
                 type="volatility",
-                severity="high" if metrics.volatility >= 0.35 else "medium",
+                severity="high" if metrics.volatility >= 0.32 else "medium",
                 message=(
-                    f"Die annualisierte Volatilitaet liegt bei {metrics.volatility * 100:.1f} Prozent. "
-                    "Das weist auf deutliche historische Schwankungen hin."
+                    f"Die historische Volatilitaet liegt bei {metrics.volatility * 100:.1f} Prozent pro Jahr. "
+                    "Das spricht fuer spuerbare Schwankungen im Portfolio."
                 ),
             )
         )
 
-    if metrics.sharpe_ratio < 0.5:
+    if optimized_metrics.sharpe_ratio - metrics.sharpe_ratio >= 0.15:
         findings.append(
             RiskFinding(
                 type="risk_return",
-                severity="medium",
-                message=(
-                    f"Die Sharpe Ratio von {metrics.sharpe_ratio:.2f} ist niedrig. "
-                    "Die historische Rendite war im Verhaeltnis zum Risiko begrenzt."
-                ),
-            )
-        )
-
-    dominant_sector = _dominant_allocation(allocation.by_sector)
-    if dominant_sector and dominant_sector[1] >= 0.6 and dominant_sector[0] != "Unknown":
-        findings.append(
-            RiskFinding(
-                type="allocation",
-                severity="medium",
-                message=(
-                    f"{dominant_sector[1] * 100:.1f} Prozent des Portfolios entfallen auf {dominant_sector[0]}. "
-                    "Das kann ein Branchen- oder Themenschwerpunkt sein."
-                ),
-            )
-        )
-
-    unknown_assets = [ticker for ticker in tickers if _security_metadata(ticker)["metadataStatus"] == "unknown"]
-    if unknown_assets:
-        findings.append(
-            RiskFinding(
-                type="allocation",
                 severity="low",
-                affectedAssets=unknown_assets,
                 message=(
-                    f"Fuer {', '.join(unknown_assets)} liegen keine belastbaren Asset-Allocation-Metadaten vor. "
-                    "Diese Positionen werden transparent als unbekannt klassifiziert."
+                    "Die berechnete Vergleichsvariante erreicht ein besseres Rendite-Risiko-Verhaeltnis. "
+                    "Es lohnt sich daher, die aktuelle Gewichtung kritisch mit der optimierten Alternative zu vergleichen."
                 ),
             )
         )
 
-    findings.append(
-        RiskFinding(
-            type="behavioral",
-            severity="low",
-            message=(
-                "Behavioral-Finance-Hinweis: Historische Renditen sollten nicht als sichere Erwartung verstanden "
-                "werden. Vermeide ein falsches Sicherheitsgefuehl durch bekannte Namen oder kurzfristige Gewinne."
-            ),
-        )
-    )
-    return findings
+    return findings[:4]
 
 
 def _download_prices(request: AnalyzeRequest) -> pd.DataFrame:
-    cache_key = (
-        tuple(request.tickers),
-        request.start_date.isoformat(),
-        request.end_date.isoformat(),
-        request.frequency,
-    )
-    cached = _PRICE_CACHE.get(cache_key)
-    now = datetime.now(timezone.utc)
-    if cached and now - cached[0] <= CACHE_TTL:
-        return cached[1].copy()
-
     try:
         data = yf.download(
             tickers=request.tickers,
@@ -370,9 +246,7 @@ def _download_prices(request: AnalyzeRequest) -> pd.DataFrame:
         raise HTTPException(status_code=422, detail=f"Keine verwertbaren Kursdaten fuer: {', '.join(missing)}")
     if prices.shape[1] != len(request.tickers):
         raise HTTPException(status_code=422, detail="Nicht fuer alle Ticker liegen verwertbare Kursdaten vor.")
-    cleaned = prices[request.tickers]
-    _PRICE_CACHE[cache_key] = (now, cleaned.copy())
-    return cleaned
+    return prices[request.tickers]
 
 
 def _extract_close_prices(data: pd.DataFrame, tickers: list[str]) -> pd.DataFrame:
@@ -545,156 +419,48 @@ def _build_performance(prices: pd.DataFrame, weights: np.ndarray, optimized_weig
     return rows
 
 
-def _risk_contributions(tickers: list[str], weights: np.ndarray, covariance: pd.DataFrame) -> dict[str, RiskContribution]:
-    covariance_values = covariance.to_numpy(dtype=float)
-    portfolio_variance = float(weights.T @ covariance_values @ weights)
-    portfolio_volatility = float(np.sqrt(portfolio_variance)) if portfolio_variance > 0 else 0.0
-    contributions: dict[str, RiskContribution] = {}
-
-    if portfolio_volatility <= 0:
-        equal = 1 / len(tickers)
-        for ticker in tickers:
-            contributions[ticker] = RiskContribution(
-                volatilityContribution=0.0,
-                percentContribution=equal,
-                method="zero-volatility fallback",
-            )
-        return contributions
-
-    marginal = covariance_values @ weights / portfolio_volatility
-    component = weights * marginal
-    total_component = float(component.sum())
-
-    for index, ticker in enumerate(tickers):
-        percent = float(component[index] / total_component) if total_component else 0.0
-        contributions[ticker] = RiskContribution(
-            volatilityContribution=float(component[index]),
-            percentContribution=percent,
-            method="component volatility contribution from covariance matrix",
-        )
-    return contributions
-
-
-def _build_strategy_results(
-    tickers: list[str],
-    current_weights: np.ndarray,
-    mean_returns: pd.Series,
-    covariance: pd.DataFrame,
-    returns: pd.DataFrame,
-    risk_free_rate: float,
-    var_confidence: float,
-    optimized_weights: np.ndarray,
-) -> list[StrategyResult]:
-    asset_count = len(tickers)
-    max_weight = 0.55 if asset_count > 2 else 0.75
-    low_vol = _optimize_min_volatility(covariance, max_weight)
-    diversified = _normalize_weights((np.repeat(1 / asset_count, asset_count) + current_weights) / 2)
-    return_oriented = _tilt_to_expected_return(mean_returns, max_weight)
-    strategies = [
-        (
-            "low_volatility",
-            "Volatilitaetsarme Variante",
-            "Minimiert die historische Portfolio-Volatilitaet mit long-only Gewichten.",
-            low_vol,
-        ),
-        (
-            "diversified",
-            "Staerker diversifizierte Variante",
-            "Bewegt das Portfolio in Richtung Gleichgewichtung, um Einzelklumpen zu reduzieren.",
-            diversified,
-        ),
-        (
-            "return_oriented",
-            "Renditeorientierte Variante",
-            "Gewichtet Positionen mit hoeherer historischer Rendite staerker, aber mit Obergrenze.",
-            return_oriented,
-        ),
-        (
-            "max_sharpe",
-            "Sharpe-Ratio-orientierte Variante",
-            "Maximiert die historische Sharpe Ratio unter long-only Nebenbedingungen.",
-            optimized_weights,
-        ),
-    ]
-
-    results: list[StrategyResult] = []
-    for strategy_id, name, description, weights in strategies:
-        metrics = _metrics(mean_returns, covariance, returns, weights, risk_free_rate, var_confidence)
-        results.append(
-            StrategyResult(
-                id=strategy_id,
-                name=name,
-                description=description,
-                weights=[float(value) for value in weights],
-                metrics=metrics,
-                weightDelta=[float(value) for value in weights - current_weights],
-                diversificationNote=_strategy_diversification_note(weights),
-            )
-        )
-    return results
-
-
-def _optimize_min_volatility(covariance: pd.DataFrame, max_weight: float) -> np.ndarray:
-    asset_count = len(covariance)
-    initial = np.repeat(1 / asset_count, asset_count)
-    bounds = tuple((0.0, max_weight) for _ in range(asset_count))
-    constraints = ({"type": "eq", "fun": lambda weights: np.sum(weights) - 1.0},)
-
-    def objective(weights: np.ndarray) -> float:
-        return float(np.sqrt(weights.T @ covariance.to_numpy() @ weights))
-
-    result = minimize(objective, initial, method="SLSQP", bounds=bounds, constraints=constraints)
-    if not result.success:
-        return initial
-    return _normalize_weights(np.clip(result.x, 0, max_weight))
-
-
-def _tilt_to_expected_return(mean_returns: pd.Series, max_weight: float) -> np.ndarray:
-    values = mean_returns.to_numpy(dtype=float)
-    shifted = values - float(values.min())
-    if float(shifted.sum()) <= 0:
-        shifted = np.ones_like(values)
-    weights = shifted / shifted.sum()
-    weights = np.minimum(weights, max_weight)
-    if float(weights.sum()) <= 0:
-        return np.repeat(1 / len(values), len(values))
-    return _normalize_weights(weights)
-
-
-def _strategy_diversification_note(weights: np.ndarray) -> str:
-    largest = float(weights.max())
-    effective_positions = 1 / float(np.sum(weights * weights))
-    if largest >= 0.5:
-        return f"Groesste Position {largest * 100:.1f} Prozent; Strategie bleibt konzentriert."
-    return f"Effektive Positionszahl ca. {effective_positions:.1f}; groesste Position {largest * 100:.1f} Prozent."
-
-
 def _build_asset_results(
     tickers: list[str],
     weights: np.ndarray,
     mean_returns: pd.Series,
     covariance: pd.DataFrame,
     prices: pd.DataFrame,
-    risk_contributions: dict[str, RiskContribution],
+    profiles: dict[str, object],
 ) -> list[AssetResult]:
     results: list[AssetResult] = []
     for index, ticker in enumerate(tickers):
-        metadata = _security_metadata(ticker)
+        profile = profiles[ticker]
         results.append(
             AssetResult(
                 ticker=ticker,
+                name=getattr(profile, "name"),
+                sector=getattr(profile, "sector"),
+                instrument_type=getattr(profile, "instrument_type"),
                 weight=float(weights[index]),
                 expectedReturn=float(mean_returns[ticker]),
                 volatility=float(np.sqrt(covariance.loc[ticker, ticker])),
                 lastPrice=float(prices[ticker].iloc[-1]),
-                assetClass=metadata["assetClass"],
-                sector=metadata["sector"],
-                region=metadata["region"],
-                metadataStatus=metadata["metadataStatus"],
-                riskContribution=risk_contributions[ticker],
             )
         )
     return results
+
+
+def _build_sector_allocation(asset_results: list[AssetResult]) -> list[SectorAllocationItem]:
+    grouped: dict[str, dict[str, object]] = {}
+    for asset in asset_results:
+        bucket = grouped.setdefault(asset.sector, {"weight": 0.0, "tickers": []})
+        bucket["weight"] = float(bucket["weight"]) + asset.weight
+        bucket["tickers"] = [*bucket["tickers"], asset.ticker]
+
+    ordered = sorted(grouped.items(), key=lambda item: float(item[1]["weight"]), reverse=True)
+    return [
+        SectorAllocationItem(
+            sector=sector,
+            weight=round(float(values["weight"]), 6),
+            tickers=list(values["tickers"]),
+        )
+        for sector, values in ordered
+    ]
 
 
 def _matrix_to_lists(matrix: pd.DataFrame) -> list[list[float]]:
@@ -704,21 +470,6 @@ def _matrix_to_lists(matrix: pd.DataFrame) -> list[list[float]]:
 def _diversification_score(weights: np.ndarray) -> float:
     herfindahl = float(np.sum(weights * weights))
     return max(0.0, min(100.0, (1 - herfindahl) * 140))
-
-
-def _add_weight(target: dict[str, float], key: str, weight: float) -> None:
-    target[key] = target.get(key, 0.0) + weight
-
-
-def _round_weight_map(values: dict[str, float]) -> dict[str, float]:
-    return {key: round(float(value), 6) for key, value in sorted(values.items())}
-
-
-def _dominant_allocation(values: dict[str, float]) -> tuple[str, float] | None:
-    if not values:
-        return None
-    key = max(values, key=values.get)
-    return key, float(values[key])
 
 
 def _high_correlation_pairs(correlation: pd.DataFrame, threshold: float = 0.75) -> list[tuple[str, str]]:

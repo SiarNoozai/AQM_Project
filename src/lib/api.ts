@@ -1,39 +1,24 @@
+export type ApiInstrumentType = "EQUITY" | "ETF";
+export type FocusArea = "summary" | "sector" | "concentration" | "diversification" | "risk_drivers";
+export type TimeHorizon = "short_term" | "mid_term" | "long_term";
+export type RiskStyle = "defensive" | "balanced" | "aggressive";
+export type GoalPreset = "diversify_broadly" | "keep_tech_focus" | "defensive" | "balanced";
+
 export type ApiAsset = {
   ticker: string;
+  name: string;
+  sector: string;
+  instrumentType: ApiInstrumentType;
   weight: number;
   expectedReturn: number;
   volatility: number;
   lastPrice: number;
-  assetClass: string;
-  sector: string;
-  region: string;
-  metadataStatus: "known" | "inferred" | "unknown";
-  riskContribution: {
-    volatilityContribution: number;
-    percentContribution: number;
-    method: string;
-  };
-};
-
-export type ApiAssetAllocation = {
-  bySecurity: Record<string, number>;
-  byAssetClass: Record<string, number>;
-  bySector: Record<string, number>;
-  byRegion: Record<string, number>;
 };
 
 export type ApiRiskFinding = {
-  type:
-    | "concentration"
-    | "correlation"
-    | "diversification"
-    | "volatility"
-    | "risk_return"
-    | "allocation"
-    | "behavioral";
+  type: "concentration" | "correlation" | "diversification" | "volatility" | "risk_return";
   severity: "low" | "medium" | "high";
   message: string;
-  affectedAssets: string[];
 };
 
 export type ApiMetrics = {
@@ -44,28 +29,10 @@ export type ApiMetrics = {
   diversificationScore: number;
 };
 
-export type ApiFrontierPoint = {
-  id: number;
-  risk: number;
-  return: number;
-  sharpe: number;
-  weights: number[];
-  kind: "simulation" | "current" | "optimized";
-};
-
-export type ApiStrategy = {
-  id: "low_volatility" | "diversified" | "return_oriented" | "max_sharpe";
-  name: string;
-  description: string;
-  weights: number[];
-  metrics: ApiMetrics;
-  weightDelta: number[];
-  diversificationNote: string;
-};
-
-export type ApiReportSection = {
-  title: string;
-  content: string;
+export type ApiSectorAllocation = {
+  sector: string;
+  weight: number;
+  tickers: string[];
 };
 
 export type ApiAnalysis = {
@@ -78,19 +45,18 @@ export type ApiAnalysis = {
   riskFreeRate: number;
   varConfidence: number;
   assets: ApiAsset[];
+  sectorAllocation: ApiSectorAllocation[];
   metrics: ApiMetrics;
   optimizedMetrics: ApiMetrics;
   optimizedWeights: number[];
-  assetAllocation: ApiAssetAllocation;
   riskFindings: ApiRiskFinding[];
-  strategies: ApiStrategy[];
   correlationMatrix: {
     tickers: string[];
     values: number[][];
   };
   covarianceMatrix: number[][];
   performance: Array<Record<string, number | string>>;
-  frontier: ApiFrontierPoint[];
+  frontier: Array<Record<string, number | string | number[]>>;
   recommendations: string[];
   recommendationSource: "rules";
   disclaimer: string;
@@ -106,63 +72,92 @@ export type AnalyzePayload = {
   varConfidence: number;
 };
 
+export type InvestorProfile = {
+  timeHorizon: TimeHorizon;
+  riskStyle: RiskStyle;
+};
+
+export type RecommendationWeightAdjustment = {
+  ticker: string;
+  currentWeight: number;
+  suggestedWeight: number;
+  reason: string;
+};
+
+export type RecommendationIdea = {
+  ticker: string;
+  name: string;
+  sector: string;
+  reason: string;
+};
+
+export type RecommendationReviewCandidate = {
+  ticker: string;
+  reason: string;
+};
+
+export type RecommendationNewsSignal = {
+  ticker: string;
+  headline: string;
+  sentimentLabel: "positive" | "neutral" | "negative" | "mixed";
+  url: string;
+};
+
 export type RecommendationResult = {
-  recommendations: string[];
-  report: ApiReportSection[];
+  summary: string;
+  profileFit: string;
+  analysisHighlights: string[];
+  sectorInsights: string[];
+  actionItems: string[];
+  weightAdjustments: RecommendationWeightAdjustment[];
+  newIdeas: RecommendationIdea[];
+  reviewCandidates: RecommendationReviewCandidate[];
+  newsSignals: RecommendationNewsSignal[];
   source: "ollama" | "rules";
   model: string;
   disclaimer: string;
 };
 
-export type AskResult = {
-  answer: string;
-  source: "ollama" | "rules";
-  model: string;
-  disclaimer: string;
+export type RecommendPayload = {
+  analysis: ApiAnalysis;
+  focusAreas: FocusArea[];
+  investorProfile: InvestorProfile;
+  goalPreset: GoalPreset;
+  goalNote?: string;
+  model?: string;
 };
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
+export type SecuritySearchResult = {
+  symbol: string;
+  name: string;
+  type: "EQUITY" | "ETF";
+  exchange: string;
+};
+
+export type SecuritySearchResponse = {
+  results: SecuritySearchResult[];
+};
+
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "";
 
 export async function analyzePortfolio(payload: AnalyzePayload) {
   return postJson<ApiAnalysis>("/api/analyze", payload);
 }
 
-export async function recommendPortfolio(analysis: ApiAnalysis) {
-  return postJson<RecommendationResult>("/api/recommend", { analysis });
+export async function recommendPortfolio(payload: RecommendPayload) {
+  return postJson<RecommendationResult>("/api/recommend", payload);
 }
 
-export async function askPortfolioQuestion(analysis: ApiAnalysis, question: string) {
-  return postJson<AskResult>("/api/ask", { analysis, question });
-}
-
-export async function downloadExport(kind: "csv" | "pdf", analysis: ApiAnalysis, recommendations: string[]) {
-  const response = await fetch(`${API_BASE_URL}/api/export/${kind}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ analysis, recommendations }),
+export async function searchSecurities(query: string, limit = 8) {
+  const params = new URLSearchParams({
+    q: query,
+    limit: String(limit),
   });
-
-  if (!response.ok) {
-    throw new Error(await readApiError(response));
-  }
-
-  const blob = await response.blob();
-  const extension = kind === "csv" ? "csv" : "pdf";
-  const mimePrefix = kind === "csv" ? "text/csv" : "application/pdf";
-  const url = URL.createObjectURL(new Blob([blob], { type: mimePrefix }));
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `portfolio-analyse.${extension}`;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
+  return getJson<SecuritySearchResponse>(`/api/securities/search?${params.toString()}`);
 }
 
 async function postJson<T>(path: string, payload: unknown): Promise<T> {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
+  const response = await request(`${API_BASE_URL}${path}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -175,6 +170,29 @@ async function postJson<T>(path: string, payload: unknown): Promise<T> {
   }
 
   return response.json() as Promise<T>;
+}
+
+async function getJson<T>(path: string): Promise<T> {
+  const response = await request(`${API_BASE_URL}${path}`);
+
+  if (!response.ok) {
+    throw new Error(await readApiError(response));
+  }
+
+  return response.json() as Promise<T>;
+}
+
+async function request(input: RequestInfo | URL, init?: RequestInit) {
+  try {
+    return await fetch(input, init);
+  } catch (caughtError) {
+    if (caughtError instanceof TypeError) {
+      throw new Error(
+        "Backend nicht erreichbar. Bitte starte das FastAPI-Backend auf Port 8000 neu oder nutze den Vite-Proxy.",
+      );
+    }
+    throw caughtError;
+  }
 }
 
 async function readApiError(response: Response) {

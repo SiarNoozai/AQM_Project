@@ -187,26 +187,28 @@ export function buildRecommendations(
     (maxIndex, weight, index) => (weight > currentWeights[maxIndex] ? index : maxIndex),
     0,
   );
-  const riskAssetIndex = assets.reduce(
-    (maxIndex, asset, index) => (asset.volatility > assets[maxIndex].volatility ? index : maxIndex),
+  const largestShiftIndex = optimized.weights.reduce(
+    (maxIndex, weight, index) =>
+      Math.abs(weight - currentWeights[index]) > Math.abs(optimized.weights[maxIndex] - currentWeights[maxIndex])
+        ? index
+        : maxIndex,
     0,
   );
-  const optimizedLargestIndex = optimized.weights.reduce(
-    (maxIndex, weight, index) => (weight > optimized.weights[maxIndex] ? index : maxIndex),
-    0,
-  );
+  const sharpeDelta = optimized.sharpe - current.sharpeRatio;
+  const riskDelta = optimized.risk - current.volatility;
 
   return [
-    `Die groesste Einzelposition ist ${assets[dominantAssetIndex].ticker} mit ${formatPercent(
+    `Die Analyse legt nahe, das Gewicht von ${assets[dominantAssetIndex].ticker} kritisch zu pruefen, weil diese Position mit ${formatPercent(
       currentWeights[dominantAssetIndex],
-    )}; dadurch ist das Portfolio spuerbar von dieser Position abhaengig.`,
-    `${assets[riskAssetIndex].ticker} traegt wegen der hohen historischen Volatilitaet besonders stark zum Gesamtrisiko bei.`,
-    `Die simulierte Max-Sharpe-Variante wuerde ${assets[optimizedLargestIndex].ticker} hoeher gewichten und die erwartete Sharpe Ratio auf ${optimized.sharpe.toFixed(
+    )} den staerksten Einfluss auf dein Portfolio hat.`,
+    `Eine moegliche Portfolioverbesserung waere, ${assets[largestShiftIndex].ticker} von ${formatPercent(
+      currentWeights[largestShiftIndex],
+    )} auf ${formatPercent(optimized.weights[largestShiftIndex])} umzugewichten, um das Rendite-Risiko-Verhaeltnis breiter aufzustellen.`,
+    `Diese Anpassung wirkt aus der historischen Analyse plausibel, weil sich die Sharpe Ratio um ${sharpeDelta.toFixed(
       2,
-    )} verbessern.`,
-    `Der historische 1-Tages-Value-at-Risk liegt bei etwa ${formatPercent(
-      current.valueAtRisk,
-    )}; dieser Wert ist ein Risikomass, keine Prognosegarantie.`,
+    )} Punkte veraendert und das Risiko um ${formatPercent(Math.abs(riskDelta))} ${
+      riskDelta <= 0 ? "sinkt" : "steigt"
+    }.`,
   ];
 }
 
