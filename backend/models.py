@@ -7,13 +7,20 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 
 Frequency = Literal["1d", "1wk", "1mo"]
+InstrumentType = Literal["EQUITY", "ETF"]
+FocusArea = Literal["summary", "sector", "concentration", "diversification", "risk_drivers"]
+TimeHorizon = Literal["short_term", "mid_term", "long_term"]
+RiskStyle = Literal["defensive", "balanced", "aggressive"]
+GoalPreset = Literal["diversify_broadly", "keep_tech_focus", "defensive", "balanced"]
+RecommendationSource = Literal["ollama", "rules"]
+SentimentLabel = Literal["positive", "neutral", "negative", "mixed"]
 
 
 class AnalyzeRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
-    tickers: list[str] = Field(min_length=2, max_length=8)
-    weights: list[float] = Field(min_length=2, max_length=8)
+    tickers: list[str] = Field(min_length=2, max_length=10)
+    weights: list[float] = Field(min_length=2, max_length=10)
     start_date: date = Field(alias="startDate")
     end_date: date = Field(alias="endDate")
     frequency: Frequency = "1d"
@@ -51,45 +58,29 @@ class PortfolioMetrics(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
-class RiskContribution(BaseModel):
-    volatility_contribution: float = Field(alias="volatilityContribution")
-    percent_contribution: float = Field(alias="percentContribution")
-    method: str
-
-    model_config = ConfigDict(populate_by_name=True)
+class RiskFinding(BaseModel):
+    type: Literal["concentration", "correlation", "diversification", "volatility", "risk_return"]
+    severity: Literal["low", "medium", "high"]
+    message: str
 
 
 class AssetResult(BaseModel):
     ticker: str
+    name: str
+    sector: str
+    instrument_type: InstrumentType = Field(alias="instrumentType")
     weight: float
     expected_return: float = Field(alias="expectedReturn")
     volatility: float
     last_price: float = Field(alias="lastPrice")
-    asset_class: str = Field(alias="assetClass")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class SectorAllocationItem(BaseModel):
     sector: str
-    region: str
-    metadata_status: Literal["known", "inferred", "unknown"] = Field(alias="metadataStatus")
-    risk_contribution: RiskContribution = Field(alias="riskContribution")
-
-    model_config = ConfigDict(populate_by_name=True)
-
-
-class AssetAllocation(BaseModel):
-    by_security: dict[str, float] = Field(alias="bySecurity")
-    by_asset_class: dict[str, float] = Field(alias="byAssetClass")
-    by_sector: dict[str, float] = Field(alias="bySector")
-    by_region: dict[str, float] = Field(alias="byRegion")
-
-    model_config = ConfigDict(populate_by_name=True)
-
-
-class RiskFinding(BaseModel):
-    type: Literal["concentration", "correlation", "diversification", "volatility", "risk_return", "allocation", "behavioral"]
-    severity: Literal["low", "medium", "high"]
-    message: str
-    affected_assets: list[str] = Field(default_factory=list, alias="affectedAssets")
-
-    model_config = ConfigDict(populate_by_name=True)
+    weight: float
+    tickers: list[str]
 
 
 class FrontierPoint(BaseModel):
@@ -103,23 +94,6 @@ class FrontierPoint(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
-class StrategyResult(BaseModel):
-    id: Literal["low_volatility", "diversified", "return_oriented", "max_sharpe"]
-    name: str
-    description: str
-    weights: list[float]
-    metrics: PortfolioMetrics
-    weight_delta: list[float] = Field(alias="weightDelta")
-    diversification_note: str = Field(alias="diversificationNote")
-
-    model_config = ConfigDict(populate_by_name=True)
-
-
-class ReportSection(BaseModel):
-    title: str
-    content: str
-
-
 class CorrelationMatrix(BaseModel):
     tickers: list[str]
     values: list[list[float]]
@@ -128,7 +102,7 @@ class CorrelationMatrix(BaseModel):
 class AnalysisResponse(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
-    mode: Literal["live"]
+    mode: Literal["live", "demo"]
     data_source: str = Field(alias="dataSource")
     updated_at: datetime = Field(alias="updatedAt")
     start_date: date = Field(alias="startDate")
@@ -137,12 +111,11 @@ class AnalysisResponse(BaseModel):
     risk_free_rate: float = Field(alias="riskFreeRate")
     var_confidence: float = Field(alias="varConfidence")
     assets: list[AssetResult]
+    sector_allocation: list[SectorAllocationItem] = Field(alias="sectorAllocation")
     metrics: PortfolioMetrics
     optimized_metrics: PortfolioMetrics = Field(alias="optimizedMetrics")
     optimized_weights: list[float] = Field(alias="optimizedWeights")
-    asset_allocation: AssetAllocation = Field(alias="assetAllocation")
     risk_findings: list[RiskFinding] = Field(alias="riskFindings")
-    strategies: list[StrategyResult]
     correlation_matrix: CorrelationMatrix = Field(alias="correlationMatrix")
     covariance_matrix: list[list[float]] = Field(alias="covarianceMatrix")
     performance: list[dict[str, float | str]]
@@ -152,30 +125,80 @@ class AnalysisResponse(BaseModel):
     disclaimer: str
 
 
+class InvestorProfile(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    time_horizon: TimeHorizon = Field(alias="timeHorizon")
+    risk_style: RiskStyle = Field(alias="riskStyle")
+
+
 class RecommendRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     analysis: dict[str, Any]
+    focus_areas: list[FocusArea] = Field(alias="focusAreas", min_length=1)
+    investor_profile: InvestorProfile = Field(alias="investorProfile")
+    goal_preset: GoalPreset = Field(alias="goalPreset")
+    goal_note: str | None = Field(default=None, alias="goalNote", max_length=600)
     model: str | None = None
+
+
+class WeightAdjustment(BaseModel):
+    ticker: str
+    current_weight: float = Field(alias="currentWeight")
+    suggested_weight: float = Field(alias="suggestedWeight")
+    reason: str
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class NewIdea(BaseModel):
+    ticker: str
+    name: str
+    sector: str
+    reason: str
+
+
+class ReviewCandidate(BaseModel):
+    ticker: str
+    reason: str
+
+
+class NewsSignal(BaseModel):
+    ticker: str
+    headline: str
+    sentiment_label: SentimentLabel = Field(alias="sentimentLabel")
+    url: str
+
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class RecommendResponse(BaseModel):
-    recommendations: list[str]
-    report: list[ReportSection] = Field(default_factory=list)
-    source: Literal["ollama", "rules"]
+    model_config = ConfigDict(populate_by_name=True)
+
+    summary: str
+    profile_fit: str = Field(alias="profileFit")
+    analysis_highlights: list[str] = Field(alias="analysisHighlights")
+    sector_insights: list[str] = Field(alias="sectorInsights")
+    action_items: list[str] = Field(alias="actionItems")
+    weight_adjustments: list[WeightAdjustment] = Field(alias="weightAdjustments")
+    new_ideas: list[NewIdea] = Field(alias="newIdeas")
+    review_candidates: list[ReviewCandidate] = Field(alias="reviewCandidates")
+    news_signals: list[NewsSignal] = Field(alias="newsSignals")
+    source: RecommendationSource
     model: str
     disclaimer: str
 
 
-class AskRequest(BaseModel):
-    analysis: dict[str, Any]
-    question: str = Field(min_length=3, max_length=500)
-    model: str | None = None
+class SecuritySearchResult(BaseModel):
+    symbol: str
+    name: str
+    type: Literal["EQUITY", "ETF"]
+    exchange: str
 
 
-class AskResponse(BaseModel):
-    answer: str
-    source: Literal["ollama", "rules"]
-    model: str
-    disclaimer: str
+class SecuritySearchResponse(BaseModel):
+    results: list[SecuritySearchResult]
 
 
 class ExportRequest(BaseModel):

@@ -1,5 +1,6 @@
 import type { ApiAnalysis } from "./api";
 import type { AssetInput } from "../data/assets";
+import { createId } from "./id";
 
 const STORAGE_KEY = "portfolio-risk-tool.saved-portfolios.v1";
 
@@ -34,7 +35,7 @@ export function savePortfolioRecord(
   const now = new Date().toISOString();
   const current = existing.find((item) => item.name.toLowerCase() === trimmedName.toLowerCase());
   const next: SavedPortfolio = {
-    id: current?.id ?? crypto.randomUUID(),
+    id: current?.id ?? createId(),
     name: trimmedName,
     assets: assets.map((asset) => ({ ...asset })),
     createdAt: current?.createdAt ?? now,

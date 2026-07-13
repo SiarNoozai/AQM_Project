@@ -17,18 +17,40 @@ Die Anwendung zeigt, wie Privatanleger ein Portfolio aus Aktien oder ETFs eingeb
 - Charts: normalisierte Performance, Korrelationsmatrix, Effizienzgrenze aus API-Daten
 - Max-Sharpe-Optimierung mit SciPy
 - KI-Empfehlungsbereich via Ollama, mit regelbasiertem Fallback
-- strukturierter KI-Bericht und Rueckfragenfunktion
-- Risikobeitraege einzelner Positionen
-- alternative Strategien: volatilitaetsarm, diversifiziert, renditeorientiert, Max-Sharpe
-- Portfolio-Speicherung im Browser per LocalStorage
-- einfacher Backend-Cache fuer Kursdaten
 - PDF- und CSV-Export fuer Bericht und Praesentation
 
 ## Lokal starten
 
+Am einfachsten startest du alles ueber genau eine Datei:
+
 ```bash
-npm install
+./start-dev.sh
+```
+
+Alternativ auf macOS per Doppelklick:
+
+```text
+start-dev.command
+```
+
+Oder per npm:
+
+```bash
 npm run dev
+```
+
+Das startet Frontend und Backend gemeinsam und beendet beide auch wieder zusammen mit `Ctrl + C`.
+
+Wenn du nur das Frontend starten willst:
+
+```bash
+npm run dev:frontend
+```
+
+Wenn du nur das Backend starten willst:
+
+```bash
+npm run dev:backend
 ```
 
 Danach im Browser oeffnen:
@@ -37,12 +59,18 @@ Danach im Browser oeffnen:
 http://127.0.0.1:5173
 ```
 
-Backend in einem zweiten Terminal starten:
+Manuell brauchst du Frontend und Backend nur noch selten getrennt:
 
 ```bash
 cd backend
 uv sync
 uv run uvicorn main:app --reload --host 127.0.0.1 --port 8000
+```
+
+Falls `uv` auf deinem Rechner noch nicht installiert ist:
+
+```bash
+python3 -m pip install uv
 ```
 
 Health-Check:
@@ -60,15 +88,6 @@ ollama pull llama3.1
 
 Wenn Ollama nicht erreichbar ist, nutzt das Backend automatisch regelbasierte Empfehlungen.
 
-## Tests und Checks
-
-```bash
-uv run --project backend pytest backend/tests
-npm run build
-```
-
-Der Backend-Testbefehl nutzt das Backend-uv-Projekt. Der Frontend-Build prueft TypeScript und erstellt den Vite-Produktionsbuild.
-
 ## Projektlogik
 
 Der Prototyp trennt bewusst zwischen:
@@ -82,54 +101,10 @@ Die aktuelle Version kann echte Daten ueber das lokale Backend laden. Der Demo-M
 ## API-Ueberblick
 
 - `GET /api/health`
+- `GET /api/securities/search`
 - `POST /api/analyze`
 - `POST /api/recommend`
-- `POST /api/ask`
 - `POST /api/export/csv`
 - `POST /api/export/pdf`
 
 Die Analyse basiert auf historischen Daten. Sie ist keine Anlageberatung und keine Prognose.
-
-## Speicherung und Caching
-
-Portfolios werden im Browser per LocalStorage gespeichert. Das ist fuer den MVP bewusst einfach gehalten und kann spaeter durch eine Datenbank ersetzt werden.
-
-Kursdaten werden im Backend pro Prozess fuer sechs Stunden gecacht. Wiederholte Analysen mit denselben Tickern, demselben Zeitraum und derselben Frequenz muessen dadurch nicht erneut bei yfinance laden. Bei Backend-Neustart ist der Cache leer.
-
-## Environment Variables
-
-Siehe `.env.example`.
-
-- `VITE_API_BASE_URL`: Frontend-URL zum Backend, z. B. `http://127.0.0.1:8000`
-- `OLLAMA_URL`: Ollama HTTP API, Default `http://localhost:11434`
-- `OLLAMA_MODEL`: Modellname, Default `llama3.1`
-
-## DigitalOcean App Platform
-
-Das Backend nutzt `uv`. DigitalOcean App Platform erwartet dafuer im Backend-Verzeichnis
-neben `pyproject.toml` und `uv.lock` auch eine `.python-version` Datei. Diese ist unter
-`backend/.python-version` auf Python `3.11.15` gesetzt; `backend/runtime.txt` ist als
-Buildpack-Fallback ebenfalls vorhanden.
-
-Empfohlene Backend-Komponente:
-
-```text
-Type: Web Service
-Source directory: /backend
-Build command: uv sync --frozen
-Run command: uv run uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080}
-HTTP port: 8080
-```
-
-Empfohlene Frontend-Komponente:
-
-```text
-Type: Static Site
-Source directory: /
-Build command: npm ci && npm run build
-Output directory: dist
-Environment variable: VITE_API_BASE_URL=https://<backend-app-url>
-```
-
-Wenn Frontend und Backend als getrennte App-Platform-Komponenten laufen, muss
-`VITE_API_BASE_URL` auf die oeffentliche URL des Backend-Service zeigen.

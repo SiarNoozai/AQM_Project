@@ -1,18 +1,18 @@
 from __future__ import annotations
 
+import asyncio
+
 import numpy as np
 import pandas as pd
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from analysis import (
-    _build_strategy_results,
-    _calculate_returns,
-    _metrics,
-    _normalize_weights,
-    _risk_contributions,
-)
+from analysis import _build_sector_allocation, _calculate_returns, _metrics, _normalize_weights, run_analysis
 from main import app
+from models import AnalyzeRequest, AssetResult, RecommendRequest
+from recommendations import build_rule_recommendation_response
+from search import search_securities
 
 
 def test_calculate_returns_daily() -> None:
@@ -45,52 +45,112 @@ def test_metrics_and_weight_normalization() -> None:
     assert metrics.value_at_risk >= 0
 
 
-def test_risk_contributions_sum_to_one() -> None:
-    covariance = pd.DataFrame(
-        [[0.04, 0.01], [0.01, 0.09]],
-        index=["AAPL", "MSFT"],
-        columns=["AAPL", "MSFT"],
+def test_build_sector_allocation_groups_weights() -> None:
+    assets = [
+        AssetResult(
+            ticker="AAPL",
+            name="Apple",
+            sector="Information Technology",
+            instrumentType="EQUITY",
+            weight=0.35,
+            expectedReturn=0.12,
+            volatility=0.24,
+            lastPrice=200.0,
+        ),
+        AssetResult(
+            ticker="MSFT",
+            name="Microsoft",
+            sector="Information Technology",
+            instrumentType="EQUITY",
+            weight=0.25,
+            expectedReturn=0.11,
+            volatility=0.22,
+            lastPrice=420.0,
+        ),
+        AssetResult(
+            ticker="AGG",
+            name="US Aggregate Bond ETF",
+            sector="Fixed Income",
+            instrumentType="ETF",
+            weight=0.40,
+            expectedReturn=0.03,
+            volatility=0.06,
+            lastPrice=99.0,
+        ),
+    ]
+
+    allocation = _build_sector_allocation(assets)
+
+    assert allocation[0].sector == "Information Technology"
+    assert allocation[0].weight == pytest.approx(0.60)
+    assert allocation[1].sector == "Fixed Income"
+    assert allocation[1].tickers == ["AGG"]
+
+
+def test_analyze_request_accepts_up_to_ten_positions() -> None:
+    request = AnalyzeRequest(
+        tickers=["AAPL", "MSFT", "SPY", "AGG", "GOOG", "JNJ", "XLF", "XLI", "XLP", "XLU"],
+        weights=[10] * 10,
+        startDate="2020-01-01",
+        endDate="2021-01-01",
+        frequency="1d",
+        riskFreeRate=0.02,
+        varConfidence=0.95,
     )
-    weights = np.array([0.5, 0.5])
 
-    contributions = _risk_contributions(["AAPL", "MSFT"], weights, covariance)
-
-    total = sum(item.percent_contribution for item in contributions.values())
-    assert total == pytest.approx(1.0)
-    assert contributions["MSFT"].percent_contribution > contributions["AAPL"].percent_contribution
+    assert len(request.tickers) == 10
 
 
-def test_strategy_results_include_required_variants() -> None:
-    returns = pd.DataFrame(
-        {
-            "AAPL": [0.01, 0.02, -0.01, 0.03, 0.01],
-            "MSFT": [0.00, 0.01, 0.02, -0.01, 0.02],
-            "AGG": [0.001, 0.002, 0.0, 0.001, 0.001],
-        }
+def test_rule_recommendation_response_is_structured() -> None:
+    request = RecommendRequest(
+        analysis={
+            "assets": [
+                {"ticker": "AAPL", "name": "Apple", "sector": "Information Technology", "weight": 0.35},
+                {"ticker": "MSFT", "name": "Microsoft", "sector": "Information Technology", "weight": 0.30},
+                {"ticker": "SPY", "name": "S&P 500 ETF", "sector": "ETF / Multi-Sektor", "weight": 0.25},
+                {"ticker": "AGG", "name": "US Aggregate Bond ETF", "sector": "Fixed Income", "weight": 0.10},
+            ],
+            "sectorAllocation": [
+                {"sector": "Information Technology", "weight": 0.65, "tickers": ["AAPL", "MSFT"]},
+                {"sector": "ETF / Multi-Sektor", "weight": 0.25, "tickers": ["SPY"]},
+                {"sector": "Fixed Income", "weight": 0.10, "tickers": ["AGG"]},
+            ],
+            "metrics": {
+                "expectedReturn": 0.11,
+                "volatility": 0.22,
+                "sharpeRatio": 0.48,
+                "valueAtRisk": 0.021,
+                "diversificationScore": 54,
+            },
+            "optimizedMetrics": {
+                "expectedReturn": 0.10,
+                "volatility": 0.18,
+                "sharpeRatio": 0.61,
+                "valueAtRisk": 0.018,
+                "diversificationScore": 68,
+            },
+            "optimizedWeights": [0.24, 0.22, 0.29, 0.25],
+            "riskFindings": [
+                {
+                    "type": "concentration",
+                    "severity": "high",
+                    "message": "AAPL ist mit 35.0 Prozent stark gewichtet.",
+                }
+            ],
+        },
+        focusAreas=["summary", "sector", "concentration", "diversification", "risk_drivers"],
+        investorProfile={"timeHorizon": "long_term", "riskStyle": "defensive"},
+        goalPreset="diversify_broadly",
+        goalNote="Bitte auf Branchenbreite achten.",
     )
-    mean_returns = returns.mean() * 252
-    covariance = returns.cov() * 252
-    current = np.array([0.5, 0.3, 0.2])
-    optimized = np.array([0.34, 0.33, 0.33])
 
-    strategies = _build_strategy_results(
-        ["AAPL", "MSFT", "AGG"],
-        current,
-        mean_returns,
-        covariance,
-        returns,
-        0.02,
-        0.95,
-        optimized,
-    )
+    response = asyncio.run(build_rule_recommendation_response(request, "llama3.1"))
 
-    assert {strategy.id for strategy in strategies} == {
-        "low_volatility",
-        "diversified",
-        "return_oriented",
-        "max_sharpe",
-    }
-    assert all(sum(strategy.weights) == pytest.approx(1.0) for strategy in strategies)
+    assert response.summary
+    assert response.profile_fit
+    assert response.analysis_highlights
+    assert response.weight_adjustments
+    assert response.source == "rules"
 
 
 def test_api_health_and_validation_error() -> None:
@@ -113,22 +173,32 @@ def test_api_health_and_validation_error() -> None:
     assert response.status_code == 422
 
 
-def test_api_ask_uses_rule_fallback() -> None:
-    client = TestClient(app)
-    response = client.post(
-        "/api/ask",
-        json={
-            "question": "Was bedeutet der VaR?",
-            "analysis": {
-                "metrics": {"valueAtRisk": 0.021, "sharpeRatio": 0.8},
-                "assets": [],
-                "riskFindings": [],
-                "strategies": [],
-            },
-        },
+def test_search_securities_returns_local_catalog_results() -> None:
+    response = search_securities("Apple", 5)
+
+    assert response.results
+    assert response.results[0].symbol == "AAPL"
+
+
+def test_run_analysis_falls_back_to_demo_when_live_download_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    request = AnalyzeRequest(
+        tickers=["AAPL", "MSFT", "SPY", "AGG"],
+        weights=[35, 30, 25, 10],
+        startDate="2021-01-01",
+        endDate="2024-01-01",
+        frequency="1d",
+        riskFreeRate=0.02,
+        varConfidence=0.95,
     )
 
-    assert response.status_code == 200
-    body = response.json()
-    assert "Value at Risk" in body["answer"]
-    assert "keine Anlageberatung" in body["answer"]
+    def fail_download(_: AnalyzeRequest) -> pd.DataFrame:
+        raise HTTPException(status_code=502, detail="Yahoo langsam")
+
+    monkeypatch.setattr("analysis._download_prices", fail_download)
+
+    response = run_analysis(request)
+
+    assert response.mode == "demo"
+    assert "Demo-Daten" in response.data_source
+    assert len(response.assets) == 4
+    assert response.performance
