@@ -1,17 +1,24 @@
 import type { ReactNode } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   AlertTriangle,
   BrainCircuit,
   Check,
+  ChevronDown,
   Database,
+  Download,
+  FileSpreadsheet,
+  FileText,
+  MessageCircleQuestion,
   Plus,
   RefreshCw,
   RotateCcw,
+  Save,
   Search,
   ShieldCheck,
   TrendingUp,
+  Trash2,
   X,
 } from "lucide-react";
 import {
@@ -28,7 +35,7 @@ import {
   DEFAULT_VOLATILITY,
   type AssetInput,
   buildFallbackCorrelationMatrix,
-  getNextSuggestedAsset,
+  createAssetInput,
   initialAssets,
   syncAssetMetadata,
 } from "./data/assets";
@@ -44,9 +51,16 @@ import {
   type SecuritySearchResult,
   type TimeHorizon,
   analyzePortfolio,
+  exportPortfolioReport,
   recommendPortfolio,
   searchSecurities,
 } from "./lib/api";
+import {
+  type SavedPortfolio,
+  deletePortfolioRecord,
+  loadSavedPortfolios,
+  savePortfolioRecord,
+} from "./lib/portfolioStorage";
 import {
   buildEfficientFrontier,
   buildPerformanceSeries,
@@ -186,6 +200,51 @@ const percentFormatter = new Intl.NumberFormat("de-DE", {
 
 const MIN_SEARCH_QUERY_LENGTH = 2;
 
+const quickFollowUpQuestions = [
+  "Welche Position traegt aktuell das groesste Risiko?",
+  "Was wuerde die Diversifikation am staerksten verbessern?",
+  "Welche vorgeschlagene Anpassung sollte ich zuerst pruefen?",
+];
+
+type AddPositionOption = {
+  id: string;
+  label: string;
+  description: string;
+  ticker: string;
+  accent: string;
+};
+
+const addPositionOptions: AddPositionOption[] = [
+  {
+    id: "equity",
+    label: "Aktie",
+    description: "Einzelposition mit klarer Referenz, zum Beispiel Apple.",
+    ticker: "AAPL",
+    accent: "#0f766e",
+  },
+  {
+    id: "etf",
+    label: "ETF",
+    description: "Breite Marktposition, passend als Kernbaustein.",
+    ticker: "SPY",
+    accent: "#2563eb",
+  },
+  {
+    id: "bond",
+    label: "Anleihe",
+    description: "Stabilere Beimischung fuer mehr Ruhe im Portfolio.",
+    ticker: "AGG",
+    accent: "#0f4c81",
+  },
+  {
+    id: "custom",
+    label: "Leere Position",
+    description: "Freien Ticker selbst waehlen oder anschliessend suchen.",
+    ticker: "",
+    accent: "#64748b",
+  },
+];
+
 function App() {
   const [assets, setAssets] = useState<AssetInput[]>(initialAssets);
   const [periodYears, setPeriodYears] = useState<PeriodPreset>(5);
@@ -207,6 +266,15 @@ function App() {
   const [searchResults, setSearchResults] = useState<SecuritySearchResult[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
+  const [savedPortfolios, setSavedPortfolios] = useState<SavedPortfolio[]>(() => loadSavedPortfolios());
+  const [portfolioName, setPortfolioName] = useState("");
+  const [activeSavedPortfolioId, setActiveSavedPortfolioId] = useState("");
+  const [saveFeedback, setSaveFeedback] = useState<string | null>(null);
+  const [isExporting, setIsExporting] = useState<"csv" | "pdf" | null>(null);
+  const [exportFeedback, setExportFeedback] = useState<string | null>(null);
+  const [lastFollowUp, setLastFollowUp] = useState<string | null>(null);
+  const [isAddMenuOpen, setIsAddMenuOpen] = useState(false);
+  const addMenuRef = useRef<HTMLDivElement | null>(null);
 
   const { startDate, endDate } = useMemo(() => buildPeriodRange(periodYears), [periodYears]);
   const debouncedSearchQuery = useDebouncedValue(searchQuery, 300);
@@ -319,6 +387,33 @@ function App() {
   }, [isSearchOpen]);
 
   useEffect(() => {
+    if (!isAddMenuOpen) {
+      return;
+    }
+
+    const onPointerDown = (event: PointerEvent) => {
+      if (addMenuRef.current?.contains(event.target as Node)) {
+        return;
+      }
+      setIsAddMenuOpen(false);
+    };
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setIsAddMenuOpen(false);
+      }
+    };
+
+    window.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("keydown", onKeyDown);
+
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [isAddMenuOpen]);
+
+  useEffect(() => {
     if (!isSearchOpen) {
       return;
     }
@@ -367,6 +462,17 @@ function App() {
     setWorkspaceView("analysis");
   }, [analysis]);
 
+  useEffect(() => {
+    if (!saveFeedback && !exportFeedback) {
+      return;
+    }
+    const timeoutId = window.setTimeout(() => {
+      setSaveFeedback(null);
+      setExportFeedback(null);
+    }, 3500);
+    return () => window.clearTimeout(timeoutId);
+  }, [exportFeedback, saveFeedback]);
+
   function resetAiState() {
     setWorkspaceView("analysis");
     setActiveAiStep(1);
@@ -378,6 +484,7 @@ function App() {
     setRecommendation(null);
     setAiError(null);
     setIsGeneratingRecommendation(false);
+    setLastFollowUp(null);
   }
 
   function resetDerivedState() {
@@ -416,12 +523,30 @@ function App() {
     );
   }
 
-  function addAssetRow() {
-    if (assets.length >= 10) {
-      return;
-    }
+  function appendAsset(seed: Partial<Omit<AssetInput, "id">>, options: { preserveName?: boolean } = {}) {
     resetDerivedState();
-    setAssets((currentAssets) => [...currentAssets, getNextSuggestedAsset(currentAssets)]);
+    setAssets((currentAssets) => {
+      if (currentAssets.length >= 10) {
+        return currentAssets;
+      }
+
+      const nextIndex = currentAssets.length;
+      const nextAsset = syncAssetMetadata(createAssetInput(seed, nextIndex), nextIndex, options);
+      return [...currentAssets, nextAsset];
+    });
+  }
+
+  function handleAddPosition(option: AddPositionOption) {
+    appendAsset(
+      {
+        ticker: option.ticker,
+        name: option.label,
+        weight: 0,
+        color: option.accent,
+      },
+      { preserveName: option.ticker === "" },
+    );
+    setIsAddMenuOpen(false);
   }
 
   function removeAssetRow(index: number) {
@@ -441,6 +566,47 @@ function App() {
     setPeriodYears(5);
     resetDerivedState();
     closeSearchModal();
+    setIsAddMenuOpen(false);
+    setActiveSavedPortfolioId("");
+    setPortfolioName("");
+    setSaveFeedback(null);
+  }
+
+  function handleSavePortfolio() {
+    const nextSavedPortfolios = savePortfolioRecord(savedPortfolios, portfolioName, assets, analysis);
+    const savedName = portfolioName.trim() || "Unbenanntes Portfolio";
+    const wasExisting = savedPortfolios.some((item) => item.name.toLowerCase() === savedName.toLowerCase());
+    const savedRecord = nextSavedPortfolios.find((item) => item.name.toLowerCase() === savedName.toLowerCase());
+
+    setSavedPortfolios(nextSavedPortfolios);
+    setPortfolioName(savedRecord?.name ?? savedName);
+    setActiveSavedPortfolioId(savedRecord?.id ?? "");
+    setSaveFeedback(wasExisting ? "Portfolio aktualisiert" : "Portfolio gespeichert");
+  }
+
+  function handleLoadPortfolio(id: string) {
+    const record = savedPortfolios.find((item) => item.id === id);
+    if (!record) {
+      return;
+    }
+
+    setAssets(record.assets.map((asset, index) => syncAssetMetadata({ ...asset }, index, { preserveName: true })));
+    setAnalysis(record.lastAnalysis ?? null);
+    resetAiState();
+    setError(null);
+    setPortfolioName(record.name);
+    setActiveSavedPortfolioId(record.id);
+    setSaveFeedback(record.lastAnalysis ? "Portfolio inklusive letzter Analyse geladen" : "Portfolio geladen");
+  }
+
+  function handleDeletePortfolio() {
+    if (!activeSavedPortfolioId) {
+      return;
+    }
+    const record = savedPortfolios.find((item) => item.id === activeSavedPortfolioId);
+    setSavedPortfolios(deletePortfolioRecord(savedPortfolios, activeSavedPortfolioId));
+    setActiveSavedPortfolioId("");
+    setSaveFeedback(record ? `„${record.name}“ geloescht` : "Portfolio geloescht");
   }
 
   function handlePeriodChange(nextValue: PeriodPreset) {
@@ -600,7 +766,7 @@ function App() {
     setActiveAiStep((current) => Math.max(1, current - 1) as AiStep);
   }
 
-  async function handleGenerateRecommendation() {
+  async function handleGenerateRecommendation(followUpQuestion?: string) {
     if (!analysis) {
       setAiError("Bitte fuehre zuerst eine Analyse durch.");
       return;
@@ -620,15 +786,20 @@ function App() {
     setIsGeneratingRecommendation(true);
     setAiError(null);
 
+    const combinedGoalNote = [goalNote.trim(), followUpQuestion ? `Schnellfrage: ${followUpQuestion}` : ""]
+      .filter(Boolean)
+      .join("\n");
+
     try {
       const nextRecommendation = await recommendPortfolio({
         analysis,
         focusAreas: selectedFocusAreas,
         investorProfile: selectedProfile,
         goalPreset: selectedGoalPreset,
-        goalNote: goalNote.trim() || undefined,
+        goalNote: combinedGoalNote || undefined,
       });
       setRecommendation(nextRecommendation);
+      setLastFollowUp(followUpQuestion ?? null);
     } catch (caughtError) {
       setRecommendation(null);
       setAiError(caughtError instanceof Error ? caughtError.message : "KI-Auswertung konnte nicht geladen werden.");
@@ -637,12 +808,39 @@ function App() {
     }
   }
 
+  async function handleExport(format: "csv" | "pdf") {
+    if (!analysis) {
+      setExportFeedback("Bitte zuerst eine Analyse erstellen");
+      return;
+    }
+
+    setIsExporting(format);
+    setExportFeedback(null);
+    try {
+      const report = await exportPortfolioReport(format, analysis, recommendation?.actionItems ?? analysis.recommendations);
+      const url = URL.createObjectURL(report);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `portfolio-analyse.${format}`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      setExportFeedback(`${format.toUpperCase()}-Export erstellt`);
+    } catch (caughtError) {
+      setExportFeedback(caughtError instanceof Error ? caughtError.message : "Export konnte nicht erstellt werden.");
+    } finally {
+      setIsExporting(null);
+    }
+  }
+
   return (
     <div className="dashboard-screen">
       <header className="app-header">
         <div className="header-copy">
-          <h1>Portfolioanalyse mit KI-Support</h1>
-          <p>Analyse, Risikoverstaendnis und gefuehrte Portfolioverbesserungen in einem fokussierten Uni-MVP.</p>
+          <p className="eyebrow">Portfolio Workspace</p>
+          <h1>Portfolioanalyse</h1>
+          <p>Historische Kennzahlen, Risiken und gefuehrte Entscheidungen an einem Ort.</p>
         </div>
 
         <div className="header-actions" aria-label="Analyse Steuerung">
@@ -660,7 +858,7 @@ function App() {
               onClick={() => handleWorkspaceChange("ai")}
               disabled={!canOpenAiWorkspace}
             >
-              KI-Auswertung
+              KI-Bericht
             </button>
           </div>
 
@@ -677,87 +875,151 @@ function App() {
             ))}
           </div>
 
-          <div className={`status-pill ${isLive ? "live" : "fallback"}`}>
+          <div className={`status-pill ${isLoading ? "loading" : isLive ? "live" : "fallback"}`} aria-live="polite">
             <span />
-            {isLive ? "Live-Daten" : "Fallback-Demo"}
+            {isLoading ? "Daten werden geladen" : isLive ? "Live-Daten" : "Demo-Daten"}
+          </div>
+
+          <div className="export-actions" aria-label="Bericht exportieren">
+            <button
+              type="button"
+              className="export-button"
+              onClick={() => handleExport("csv")}
+              disabled={!analysis || isExporting !== null}
+              title={analysis ? "CSV-Bericht herunterladen" : "Export wird nach der Analyse verfuegbar"}
+            >
+              {isExporting === "csv" ? <RefreshCw className="spinning" size={14} /> : <FileSpreadsheet size={14} />}
+              CSV
+            </button>
+            <button
+              type="button"
+              className="export-button"
+              onClick={() => handleExport("pdf")}
+              disabled={!analysis || isExporting !== null}
+              title={analysis ? "PDF-Bericht herunterladen" : "Export wird nach der Analyse verfuegbar"}
+            >
+              {isExporting === "pdf" ? <RefreshCw className="spinning" size={14} /> : <FileText size={14} />}
+              PDF
+            </button>
           </div>
 
           <button className="toolbar-button primary" type="button" onClick={handleAnalyze} disabled={isLoading}>
             {isLoading ? <RefreshCw className="spinning" size={16} /> : <Database size={16} />}
-            {isLoading ? "Analysiere" : "Analyse starten"}
+            {isLoading ? "Analyse laeuft" : "Analyse starten"}
           </button>
         </div>
       </header>
 
       <div className="dashboard-layout">
         <aside className="portfolio-sidebar panel" aria-label="Portfolio Builder">
-          <div className="panel-heading">
+          <div className="builder-header">
             <div>
-              <h2>Portfolio Builder</h2>
-              <p>Baue dein Portfolio mit 2 bis 10 Positionen und verteile die Gewichte nachvollziehbar.</p>
+              <span className="section-kicker">Portfolio</span>
+              <h2>Aktuelle Allokation</h2>
+              <p>Gewichte festlegen, dann analysieren.</p>
             </div>
-            <button className="ghost-button" type="button" onClick={resetPortfolio}>
+            <button className="ghost-button reset-button" type="button" onClick={resetPortfolio} title="Standardportfolio wiederherstellen">
               <RotateCcw size={15} />
-              Reset
+              <span>Zuruecksetzen</span>
             </button>
           </div>
 
-          <div className="builder-meta">
-            <div>
-              <span>Analysezeitraum</span>
-              <strong>{formatShortDateRange(startDate, endDate)}</strong>
-            </div>
-            <div>
-              <span>Positionen</span>
-              <strong>{assets.length} / 10</strong>
-            </div>
+          <div className="builder-status" aria-label="Portfolio Status">
+            <span>{formatShortDateRange(startDate, endDate)}</span>
+            <span aria-hidden="true">•</span>
+            <strong>{assets.length} Positionen</strong>
           </div>
 
-          <div className="builder-grid">
+          <details className="portfolio-library">
+            <summary>
+              <span><Save size={14} aria-hidden="true" /> Arbeitsstand speichern oder laden</span>
+              <span className="library-count">{savedPortfolios.length}</span>
+            </summary>
+            <div className="library-content" aria-labelledby="portfolio-library-title">
+              <strong id="portfolio-library-title">Lokaler Arbeitsstand</strong>
+              <div className="library-save-row">
+                <input
+                  aria-label="Name des Portfolios"
+                  placeholder="z. B. Langfristig"
+                  value={portfolioName}
+                  onChange={(event) => setPortfolioName(event.target.value)}
+                />
+                <button type="button" className="compact-action" onClick={handleSavePortfolio}>
+                  <Save size={14} />
+                  Speichern
+                </button>
+              </div>
+              <div className="library-load-row">
+                <select
+                  aria-label="Gespeichertes Portfolio laden"
+                  value={activeSavedPortfolioId}
+                  onChange={(event) => handleLoadPortfolio(event.target.value)}
+                >
+                  <option value="">Gespeicherte Portfolios</option>
+                  {savedPortfolios.map((portfolio) => (
+                    <option key={portfolio.id} value={portfolio.id}>
+                      {portfolio.name}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  className="icon-action danger"
+                  onClick={handleDeletePortfolio}
+                  disabled={!activeSavedPortfolioId}
+                  aria-label="Ausgewaehltes Portfolio loeschen"
+                  title="Ausgewaehltes Portfolio loeschen"
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
+              {saveFeedback ? <p className="library-feedback" role="status">{saveFeedback}</p> : null}
+            </div>
+          </details>
+
+          <section className="builder-grid" aria-label="Portfolio Positionen">
+            <div className="holding-list-heading" aria-hidden="true">
+              <span>Instrument</span>
+              <span>Gewicht</span>
+            </div>
             {assets.map((asset, index) => (
-              <article className="portfolio-row" key={asset.id}>
+              <article className="holding-row" key={asset.id}>
                 <div className="row-index" style={{ backgroundColor: asset.color }}>
                   {index + 1}
                 </div>
 
-                <div className="row-fields">
-                  <label>
-                    <span>Ticker</span>
-                    <div className="ticker-input-group">
-                      <input
-                        aria-label={`Ticker ${index + 1}`}
-                        placeholder="z. B. AAPL"
-                        value={asset.ticker}
-                        onChange={(event) => updateAsset(index, { ticker: event.target.value })}
-                      />
-                      <button
-                        type="button"
-                        className="search-trigger"
-                        onClick={() => openSearchModal(index)}
-                        aria-label={`Position ${index + 1} suchen`}
-                      >
-                        <Search size={15} />
-                      </button>
-                    </div>
-                    <small>{asset.name}</small>
-                  </label>
+                <label className="holding-instrument">
+                  <input
+                    aria-label={`Ticker ${index + 1}`}
+                    placeholder="z. B. AAPL"
+                    value={asset.ticker}
+                    onChange={(event) => updateAsset(index, { ticker: event.target.value })}
+                  />
+                  <small>{asset.name}</small>
+                </label>
 
-                  <label>
-                    <span>Gewichtung</span>
-                    <div className="weight-input">
-                      <input
-                        aria-label={`Gewichtung ${asset.ticker || index + 1}`}
-                        min="0"
-                        max="100"
-                        step="1"
-                        type="number"
-                        value={asset.weight}
-                        onChange={(event) => updateAsset(index, { weight: Number(event.target.value) })}
-                      />
-                      <strong>%</strong>
-                    </div>
-                  </label>
-                </div>
+                <button
+                  type="button"
+                  className="search-trigger"
+                  onClick={() => openSearchModal(index)}
+                  aria-label={`Position ${index + 1} suchen`}
+                  title="Instrument suchen"
+                >
+                  <Search size={15} />
+                </button>
+
+                <label className="holding-weight">
+                  <input
+                    aria-label={`Gewichtung ${asset.ticker || index + 1}`}
+                    min="0"
+                    max="100"
+                    step="1"
+                    type="number"
+                    value={asset.weight}
+                    onChange={(event) => updateAsset(index, { weight: Number(event.target.value) })}
+                  />
+                  <span>%</span>
+                </label>
 
                 <button
                   type="button"
@@ -770,13 +1032,53 @@ function App() {
                 </button>
               </article>
             ))}
-          </div>
+          </section>
 
           <div className="sidebar-actions">
-            <button type="button" className="toolbar-button" onClick={addAssetRow} disabled={assets.length >= 10}>
-              <Plus size={15} />
-              Position hinzufuegen
-            </button>
+            <div className="add-position-shell" ref={addMenuRef}>
+              <button
+                type="button"
+                className="toolbar-button add-position-toggle"
+                onClick={() => setIsAddMenuOpen((currentValue) => !currentValue)}
+                disabled={assets.length >= 10}
+                aria-label="Position hinzufuegen"
+                aria-expanded={isAddMenuOpen}
+                aria-controls="add-position-menu"
+                title="Position hinzufuegen"
+              >
+                <Plus size={15} />
+                <span>Hinzufuegen</span>
+                <ChevronDown size={14} className={`add-position-chevron ${isAddMenuOpen ? "open" : ""}`} />
+              </button>
+
+              {isAddMenuOpen ? (
+                <div className="add-position-menu" id="add-position-menu" role="menu" aria-label="Position hinzufuegen">
+                  {addPositionOptions.map((option) => (
+                    <button
+                      key={option.id}
+                      type="button"
+                      className="add-position-option"
+                      onClick={() => handleAddPosition(option)}
+                      role="menuitem"
+                    >
+                      <span className="add-position-swatch" style={{ backgroundColor: option.accent }} aria-hidden="true" />
+                      <span className="add-position-copy">
+                        <strong>{option.label}</strong>
+                        <span>{option.description}</span>
+                      </span>
+                      {option.ticker ? (
+                        <span className="add-position-ticker">{option.ticker}</span>
+                      ) : (
+                        <span className="add-position-ticker muted">Custom</span>
+                      )}
+                    </button>
+                  ))}
+                  <p className="add-position-hint">
+                    Die Auswahl legt die erste Zeile an. Danach kannst du jeden Ticker im Feld oder per Lupe anpassen.
+                  </p>
+                </div>
+              ) : null}
+            </div>
             <button className="sidebar-primary" type="button" onClick={handleAnalyze} disabled={isLoading}>
               <TrendingUp size={15} />
               Jetzt auswerten
@@ -792,14 +1094,11 @@ function App() {
         <main className="analysis-board">
           {error ? <div className="notice error">{error}</div> : null}
           {workspaceView === "ai" && aiError ? <div className="notice error">{aiError}</div> : null}
-          {isLoading ? (
-            <div className="notice loading">
-              <RefreshCw className="spinning" size={14} />
-              Historische Kurse werden geladen und Kennzahlen berechnet.
-            </div>
-          ) : null}
+          {exportFeedback ? <div className="notice feedback" role="status"><Download size={14} />{exportFeedback}</div> : null}
 
-          {workspaceView === "analysis" ? (
+          {isLoading ? (
+            <AnalysisSkeleton />
+          ) : workspaceView === "analysis" ? (
             <>
               <section className="kpi-row" aria-label="Portfolio Kennzahlen">
                 <MetricCard
@@ -1250,7 +1549,7 @@ function App() {
                         <button
                           type="button"
                           className="toolbar-button primary"
-                          onClick={handleGenerateRecommendation}
+                          onClick={() => handleGenerateRecommendation()}
                           disabled={isGeneratingRecommendation}
                         >
                           {isGeneratingRecommendation ? <RefreshCw className="spinning" size={15} /> : <BrainCircuit size={15} />}
@@ -1292,6 +1591,31 @@ function App() {
                           </div>
                           <p>{recommendation.summary}</p>
                         </article>
+
+                        <section className="quick-followup" aria-labelledby="quick-followup-title">
+                          <div>
+                            <span>Weiterdenken</span>
+                            <strong id="quick-followup-title">Eine Frage gezielt vertiefen</strong>
+                            <p>
+                              {lastFollowUp
+                                ? `Letzte Schnellfrage: ${lastFollowUp}`
+                                : "Die Frage wird als zusätzlicher Kontext mit der bestehenden Analyse ausgewertet."}
+                            </p>
+                          </div>
+                          <div className="quick-followup-actions">
+                            {quickFollowUpQuestions.map((question) => (
+                              <button
+                                key={question}
+                                type="button"
+                                onClick={() => handleGenerateRecommendation(question)}
+                                disabled={isGeneratingRecommendation}
+                              >
+                                <MessageCircleQuestion size={14} />
+                                {question}
+                              </button>
+                            ))}
+                          </div>
+                        </section>
 
                         <article className="panel ai-result-panel">
                           <div className="panel-heading">
@@ -1558,6 +1882,37 @@ function App() {
         </div>
       ) : null}
     </div>
+  );
+}
+
+function AnalysisSkeleton() {
+  return (
+    <section className="analysis-skeleton" aria-live="polite" aria-label="Analyse wird geladen">
+      <div className="skeleton-intro">
+        <RefreshCw className="spinning" size={17} />
+        <div>
+          <strong>Historische Daten werden ausgewertet</strong>
+          <span>Kurse, Kennzahlen und die Vergleichsgewichtung werden vorbereitet.</span>
+        </div>
+      </div>
+      <div className="skeleton-kpis" aria-hidden="true">
+        {Array.from({ length: 4 }, (_, index) => (
+          <div className="skeleton-block metric-skeleton" key={index}>
+            <span />
+            <strong />
+            <small />
+          </div>
+        ))}
+      </div>
+      <div className="skeleton-block chart-skeleton" aria-hidden="true">
+        <span className="skeleton-chart-title" />
+        <div className="skeleton-chart-lines" />
+      </div>
+      <div className="skeleton-detail-row" aria-hidden="true">
+        <div className="skeleton-block detail-skeleton" />
+        <div className="skeleton-block detail-skeleton" />
+      </div>
+    </section>
   );
 }
 

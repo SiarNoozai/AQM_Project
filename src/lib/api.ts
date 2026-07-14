@@ -138,6 +138,8 @@ export type SecuritySearchResponse = {
   results: SecuritySearchResult[];
 };
 
+export type ExportFormat = "csv" | "pdf";
+
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "";
 const REQUEST_TIMEOUT_MS = 10000;
 const SEARCH_TIMEOUT_MS = 2500;
@@ -156,6 +158,30 @@ export async function searchSecurities(query: string, limit = 8) {
     limit: String(limit),
   });
   return getJson<SecuritySearchResponse>(`/api/securities/search?${params.toString()}`, SEARCH_TIMEOUT_MS);
+}
+
+export async function exportPortfolioReport(
+  format: ExportFormat,
+  analysis: ApiAnalysis,
+  recommendations?: string[],
+) {
+  const response = await request(
+    `${API_BASE_URL}/api/export/${format}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ analysis, recommendations }),
+    },
+    REQUEST_TIMEOUT_MS,
+  );
+
+  if (!response.ok) {
+    throw new Error(await readApiError(response));
+  }
+
+  return response.blob();
 }
 
 async function postJson<T>(path: string, payload: unknown, timeoutMs: number): Promise<T> {
