@@ -12,7 +12,8 @@ FocusArea = Literal["summary", "sector", "concentration", "diversification", "ri
 TimeHorizon = Literal["short_term", "mid_term", "long_term"]
 RiskStyle = Literal["defensive", "balanced", "aggressive"]
 GoalPreset = Literal["diversify_broadly", "keep_tech_focus", "defensive", "balanced"]
-RecommendationSource = Literal["ollama", "rules"]
+RecommendationSource = Literal["lmstudio", "ollama", "cloud", "rules"]
+LlmPreference = Literal["auto", "local", "cloud"]
 SentimentLabel = Literal["positive", "neutral", "negative", "mixed"]
 
 
@@ -141,6 +142,7 @@ class RecommendRequest(BaseModel):
     goal_preset: GoalPreset = Field(alias="goalPreset")
     goal_note: str | None = Field(default=None, alias="goalNote", max_length=600)
     model: str | None = None
+    llm_preference: LlmPreference = Field(default="auto", alias="llmPreference")
 
 
 class WeightAdjustment(BaseModel):

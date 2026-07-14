@@ -15,3 +15,4 @@ dev-server*.log
 backend-server*.log
 tmp/
 .venv/
+.env

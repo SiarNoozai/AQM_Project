@@ -3,6 +3,7 @@ export type FocusArea = "summary" | "sector" | "concentration" | "diversificatio
 export type TimeHorizon = "short_term" | "mid_term" | "long_term";
 export type RiskStyle = "defensive" | "balanced" | "aggressive";
 export type GoalPreset = "diversify_broadly" | "keep_tech_focus" | "defensive" | "balanced";
+export type LlmPreference = "auto" | "local" | "cloud";
 
 export type ApiAsset = {
   ticker: string;
@@ -113,7 +114,7 @@ export type RecommendationResult = {
   newIdeas: RecommendationIdea[];
   reviewCandidates: RecommendationReviewCandidate[];
   newsSignals: RecommendationNewsSignal[];
-  source: "ollama" | "rules";
+  source: "lmstudio" | "ollama" | "cloud" | "rules";
   model: string;
   disclaimer: string;
 };
@@ -125,6 +126,7 @@ export type RecommendPayload = {
   goalPreset: GoalPreset;
   goalNote?: string;
   model?: string;
+  llmPreference?: LlmPreference;
 };
 
 export type SecuritySearchResult = {
@@ -140,8 +142,41 @@ export type SecuritySearchResponse = {
 
 export type ExportFormat = "csv" | "pdf";
 
+export type LlmModelVerdict = {
+  name: string;
+  params: string;
+  sizeGb: number;
+  status: "gpu" | "cpu" | "partial" | "no";
+  label: string;
+};
+
+export type LlmProviderStatus = {
+  url: string;
+  available: boolean;
+  models: string[];
+};
+
+export type LlmCheckResponse = {
+  hardware: {
+    os: string;
+    ramGb: number;
+    gpuName: string;
+    vramGb: number;
+  };
+  models: LlmModelVerdict[];
+  providers: {
+    lmstudio: LlmProviderStatus;
+    ollama: LlmProviderStatus;
+  };
+  quantization: string;
+  methodologyCredit: string;
+  privacyNote: string;
+};
+
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "";
 const REQUEST_TIMEOUT_MS = 10000;
+// Lokale LLM-Generierung (z. B. 8B-Modell in LM Studio) kann mehrere Minuten dauern.
+const RECOMMEND_TIMEOUT_MS = 180000;
 const SEARCH_TIMEOUT_MS = 2500;
 
 export async function analyzePortfolio(payload: AnalyzePayload) {
@@ -149,7 +184,11 @@ export async function analyzePortfolio(payload: AnalyzePayload) {
 }
 
 export async function recommendPortfolio(payload: RecommendPayload) {
-  return postJson<RecommendationResult>("/api/recommend", payload, REQUEST_TIMEOUT_MS);
+  return postJson<RecommendationResult>("/api/recommend", payload, RECOMMEND_TIMEOUT_MS);
+}
+
+export async function fetchLlmCheck() {
+  return getJson<LlmCheckResponse>("/api/system/llm-check", REQUEST_TIMEOUT_MS);
 }
 
 export async function searchSecurities(query: string, limit = 8) {

@@ -16,8 +16,27 @@ Die Anwendung zeigt, wie Privatanleger ein Portfolio aus Aktien oder ETFs eingeb
 - Kennzahlen: Rendite, Volatilitaet, Sharpe Ratio, Value at Risk
 - Charts: normalisierte Performance, Korrelationsmatrix, Effizienzgrenze aus API-Daten
 - Max-Sharpe-Optimierung mit SciPy
-- KI-Empfehlungsbereich via Ollama, mit regelbasiertem Fallback
+- KI-Empfehlungsbereich via LM Studio oder Ollama (beide lokal), mit regelbasiertem Fallback
+- Lokaler LLM-Kompatibilitaets-Check: zeigt, welche Sprachmodelle die eigene Hardware ausfuehren kann (inspiriert von LLMcalc, github.com/Raskoll2/LLMcalc)
 - PDF- und CSV-Export fuer Bericht und Praesentation
+
+## Mit Docker starten (empfohlen fuer Windows + macOS)
+
+Identische Umgebung auf jedem Rechner - kein Venv-, Pfad- oder Node-Setup noetig:
+
+```bash
+docker compose up --build
+```
+
+Danach: Frontend auf http://127.0.0.1:5173, Backend auf http://127.0.0.1:8000.
+Quellcode ist per Volume eingebunden - Aenderungen laden automatisch neu (Vite HMR + uvicorn --reload).
+
+LM Studio und Ollama laufen auf dem Host und werden aus den Containern ueber
+`host.docker.internal` erreicht. Eigene Adresse per Umgebungsvariable:
+
+```bash
+LMSTUDIO_URL=http://host.docker.internal:1234 docker compose up
+```
 
 ## Lokal starten
 
@@ -79,14 +98,18 @@ Health-Check:
 http://127.0.0.1:8000/api/health
 ```
 
-Optional fuer lokale KI-Empfehlungen:
+Optional fuer lokale KI-Empfehlungen (eine der beiden Varianten):
+
+LM Studio (empfohlen): App starten, ein Modell laden (z. B. Dolphin 2.9 Llama3 8B Q4_K_M)
+und im Developer-Tab den lokalen Server starten (Port 1234).
 
 ```bash
 ollama serve
 ollama pull llama3.1
 ```
 
-Wenn Ollama nicht erreichbar ist, nutzt das Backend automatisch regelbasierte Empfehlungen.
+Provider-Kette: LM Studio -> Ollama -> regelbasierter Fallback. Wenn kein lokales
+Sprachmodell erreichbar ist, nutzt das Backend automatisch regelbasierte Empfehlungen.
 
 ## Projektlogik
 
@@ -102,6 +125,7 @@ Die aktuelle Version kann echte Daten ueber das lokale Backend laden. Der Demo-M
 
 - `GET /api/health`
 - `GET /api/securities/search`
+- `GET /api/system/llm-check`
 - `POST /api/analyze`
 - `POST /api/recommend`
 - `POST /api/export/csv`

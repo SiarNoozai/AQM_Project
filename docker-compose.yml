@@ -1,0 +1,38 @@
+# Cross-Plattform-Entwicklung (Windows + macOS) ohne lokale Venv/Node-Setups:
+#   docker compose up --build
+# Frontend: http://127.0.0.1:5173  |  Backend: http://127.0.0.1:8000
+#
+# LM Studio / Ollama laufen auf dem HOST-Rechner. Aus dem Container heraus
+# sind sie ueber host.docker.internal erreichbar (Docker Desktop auf Win/Mac).
+
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      - LMSTUDIO_URLS=${LMSTUDIO_URL:-http://host.docker.internal:1234},http://host.docker.internal:1234
+      - OLLAMA_URL=http://host.docker.internal:11434
+      - LLM_TIMEOUT=${LLM_TIMEOUT:-90}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./backend:/app
+    command: ["uvicorn", "main:app", "--reload", "--host", "0.0.0.0", "--port", "8000"]
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_API_BASE_URL=http://127.0.0.1:8000
+    volumes:
+      - ./src:/app/src
+      - ./public:/app/public
+      - ./index.html:/app/index.html
+      - ./vite.config.ts:/app/vite.config.ts
+      - ./tsconfig.json:/app/tsconfig.json
+    depends_on:
+      - backend

@@ -1,6 +1,13 @@
 from __future__ import annotations
 
 from fastapi import FastAPI, Query
+
+try:
+    from .env_config import load_env_files
+except ImportError:
+    from env_config import load_env_files
+
+load_env_files()
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 
@@ -58,6 +65,17 @@ async def recommend(request: RecommendRequest) -> RecommendResponse:
     return await generate_recommendations(request)
 
 
+@app.get("/api/system/llm-check")
+async def llm_check():
+    """Lokaler Hardware-Check: welche LLMs kann dieser Rechner ausfuehren?"""
+    try:
+        from .system_check import build_llm_check
+    except ImportError:
+        from system_check import build_llm_check
+
+    return await build_llm_check()
+
+
 @app.post("/api/export/csv")
 def export_csv(request: ExportRequest) -> Response:
     try:
@@ -86,3 +104,5 @@ def export_pdf(request: ExportRequest) -> Response:
         media_type="application/pdf",
         headers={"Content-Disposition": 'attachment; filename="portfolio-analyse.pdf"'},
     )
+
+# reload-trigger

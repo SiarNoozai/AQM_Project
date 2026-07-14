@@ -6,6 +6,7 @@ import {
   BrainCircuit,
   Check,
   ChevronDown,
+  Cpu,
   Database,
   Download,
   FileSpreadsheet,
@@ -46,12 +47,15 @@ import {
   type FocusArea,
   type GoalPreset,
   type InvestorProfile,
+  type LlmCheckResponse,
+  type LlmPreference,
   type RecommendationResult,
   type RiskStyle,
   type SecuritySearchResult,
   type TimeHorizon,
   analyzePortfolio,
   exportPortfolioReport,
+  fetchLlmCheck,
   recommendPortfolio,
   searchSecurities,
 } from "./lib/api";
@@ -190,6 +194,24 @@ const goalPresetOptions: Array<{ id: GoalPreset; label: string; description: str
   },
 ];
 
+const llmPreferenceOptions: Array<{ id: LlmPreference; label: string; description: string }> = [
+  {
+    id: "auto",
+    label: "Automatisch",
+    description: "Erst lokale KI versuchen, sonst Cloud-API, sonst regelbasiert.",
+  },
+  {
+    id: "local",
+    label: "Lokale KI (privat)",
+    description: "LM Studio oder Ollama auf diesem Rechner. Portfoliodaten bleiben lokal.",
+  },
+  {
+    id: "cloud",
+    label: "Cloud-API",
+    description: "Fuer Geraete ohne lokale KI (z. B. Tablet). Daten gehen an den API-Anbieter.",
+  },
+];
+
 const defaultFocusAreas = focusAreaOptions.map((option) => option.id);
 
 const percentFormatter = new Intl.NumberFormat("de-DE", {
@@ -250,6 +272,11 @@ function App() {
   const [periodYears, setPeriodYears] = useState<PeriodPreset>(5);
   const [analysis, setAnalysis] = useState<ApiAnalysis | null>(null);
   const [recommendation, setRecommendation] = useState<RecommendationResult | null>(null);
+  const [llmCheck, setLlmCheck] = useState<LlmCheckResponse | null>(null);
+  const [isLoadingLlmCheck, setIsLoadingLlmCheck] = useState(false);
+  const [llmCheckError, setLlmCheckError] = useState<string | null>(null);
+  const [showLlmCheckModal, setShowLlmCheckModal] = useState(false);
+  const [llmPreference, setLlmPreference] = useState<LlmPreference>("auto");
   const [isLoading, setIsLoading] = useState(false);
   const [isGeneratingRecommendation, setIsGeneratingRecommendation] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -797,6 +824,7 @@ function App() {
         investorProfile: selectedProfile,
         goalPreset: selectedGoalPreset,
         goalNote: combinedGoalNote || undefined,
+        llmPreference,
       });
       setRecommendation(nextRecommendation);
       setLastFollowUp(followUpQuestion ?? null);
@@ -805,6 +833,21 @@ function App() {
       setAiError(caughtError instanceof Error ? caughtError.message : "KI-Auswertung konnte nicht geladen werden.");
     } finally {
       setIsGeneratingRecommendation(false);
+    }
+  }
+
+  async function handleLlmCheck() {
+    setIsLoadingLlmCheck(true);
+    setLlmCheckError(null);
+    try {
+      setLlmCheck(await fetchLlmCheck());
+      setShowLlmCheckModal(true);
+    } catch (caughtError) {
+      setLlmCheckError(
+        caughtError instanceof Error ? caughtError.message : "System-Check konnte nicht geladen werden.",
+      );
+    } finally {
+      setIsLoadingLlmCheck(false);
     }
   }
 
@@ -1093,6 +1136,7 @@ function App() {
 
         <main className="analysis-board">
           {error ? <div className="notice error">{error}</div> : null}
+          {llmCheckError ? <div className="notice error">{llmCheckError}</div> : null}
           {workspaceView === "ai" && aiError ? <div className="notice error">{aiError}</div> : null}
           {exportFeedback ? <div className="notice feedback" role="status"><Download size={14} />{exportFeedback}</div> : null}
 
@@ -1141,14 +1185,26 @@ function App() {
                     Verbesserungsziel festlegen.
                   </p>
                 </div>
-                <button
-                  type="button"
-                  className="toolbar-button primary"
-                  disabled={!canOpenAiWorkspace}
-                  onClick={() => handleWorkspaceChange("ai")}
-                >
-                  {canOpenAiWorkspace ? "Zur KI-Auswertung wechseln" : "Erst Analyse durchfuehren"}
-                </button>
+                <div className="analysis-cta-actions">
+                  <button
+                    type="button"
+                    className="toolbar-button"
+                    onClick={() => handleLlmCheck()}
+                    disabled={isLoadingLlmCheck}
+                    title="Welche lokalen Sprachmodelle kann dieser Rechner ausfuehren?"
+                  >
+                    {isLoadingLlmCheck ? <RefreshCw className="spinning" size={15} /> : <Cpu size={15} />}
+                    {isLoadingLlmCheck ? "Pruefe System" : "Lokale KI pruefen"}
+                  </button>
+                  <button
+                    type="button"
+                    className="toolbar-button primary"
+                    disabled={!canOpenAiWorkspace}
+                    onClick={() => handleWorkspaceChange("ai")}
+                  >
+                    {canOpenAiWorkspace ? "Zur KI-Auswertung wechseln" : "Erst Analyse durchfuehren"}
+                  </button>
+                </div>
               </article>
 
               <article className="panel performance-panel">
@@ -1557,6 +1613,23 @@ function App() {
                         </button>
                       </div>
 
+                      <div className="llm-preference-row" role="radiogroup" aria-label="KI-Provider waehlen">
+                        {llmPreferenceOptions.map((option) => (
+                          <button
+                            key={option.id}
+                            type="button"
+                            role="radio"
+                            aria-checked={llmPreference === option.id}
+                            className={`llm-preference-option${llmPreference === option.id ? " active" : ""}`}
+                            onClick={() => setLlmPreference(option.id)}
+                            title={option.description}
+                          >
+                            <strong>{option.label}</strong>
+                            <span>{option.description}</span>
+                          </button>
+                        ))}
+                      </div>
+
                       <div className="generation-summary">
                         <div>
                           <span>Aktiver Fokus</span>
@@ -1767,7 +1840,13 @@ function App() {
                           <p>{recommendation.disclaimer}</p>
                           <span>
                             Quelle: {analysis?.dataSource ?? "Demo-Daten"} | Interpretation:{" "}
-                            {recommendation.source === "ollama" ? `Ollama ${recommendation.model}` : "Regel-Fallback"}
+                            {recommendation.source === "lmstudio"
+                              ? `LM Studio ${recommendation.model} (lokal)`
+                              : recommendation.source === "ollama"
+                                ? `Ollama ${recommendation.model} (lokal)`
+                                : recommendation.source === "cloud"
+                                  ? `Cloud-API ${recommendation.model}`
+                                  : "Regel-Fallback"}
                           </span>
                           <span>Zeitraum: {formatShortDateRange(startDate, endDate)}</span>
                           <span>Letzte Aktualisierung: {analysis ? formatDateTime(analysis.updatedAt) : "noch keine Live-Analyse"}</span>
@@ -1801,6 +1880,76 @@ function App() {
           )}
         </main>
       </div>
+
+      {showLlmCheckModal && llmCheck ? (
+        <div className="search-modal-backdrop" role="presentation" onClick={() => setShowLlmCheckModal(false)}>
+          <section
+            className="search-modal panel llm-check-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="llm-check-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="panel-heading">
+              <div>
+                <h2 id="llm-check-title">Lokale KI &amp; Datenschutz</h2>
+                <p>
+                  Ermittelt lokal auf diesem Rechner. Bei Nutzung eines lokalen Sprachmodells verlassen keine
+                  Portfoliodaten das System.
+                </p>
+              </div>
+              <button type="button" className="ghost-button" onClick={() => setShowLlmCheckModal(false)}>
+                <X size={15} />
+              </button>
+            </div>
+            <div className="llm-check-body">
+              <div className="llm-check-summary">
+                <div>
+                  <span>System</span>
+                  <strong>
+                    {llmCheck.hardware.os} · {llmCheck.hardware.ramGb} GB RAM
+                  </strong>
+                </div>
+                <div>
+                  <span>Grafikkarte</span>
+                  <strong>
+                    {llmCheck.hardware.gpuName}
+                    {llmCheck.hardware.vramGb > 0 ? ` · ${llmCheck.hardware.vramGb} GB VRAM` : ""}
+                  </strong>
+                </div>
+                <div>
+                  <span>LM Studio</span>
+                  <strong>
+                    {llmCheck.providers.lmstudio.available
+                      ? `Aktiv: ${llmCheck.providers.lmstudio.models[0] ?? "Modell geladen"}`
+                      : "Nicht erreichbar"}
+                  </strong>
+                </div>
+                <div>
+                  <span>Ollama</span>
+                  <strong>
+                    {llmCheck.providers.ollama.available
+                      ? `Aktiv: ${llmCheck.providers.ollama.models[0] ?? "Modell geladen"}`
+                      : "Nicht erreichbar"}
+                  </strong>
+                </div>
+              </div>
+              <ul className="llm-check-models">
+                {llmCheck.models.map((model) => (
+                  <li key={model.name} className={`llm-model llm-model-${model.status}`}>
+                    <strong>{model.name}</strong>
+                    <span>
+                      {model.params} · {model.sizeGb} GB · {llmCheck.quantization}
+                    </span>
+                    <em>{model.label}</em>
+                  </li>
+                ))}
+              </ul>
+              <p className="llm-check-footnote">{llmCheck.privacyNote} {llmCheck.methodologyCredit}</p>
+            </div>
+          </section>
+        </div>
+      ) : null}
 
       {isSearchOpen ? (
         <div className="search-modal-backdrop" role="presentation" onClick={closeSearchModal}>

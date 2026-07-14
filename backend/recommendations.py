@@ -18,6 +18,26 @@ except ImportError:
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1")
+LMSTUDIO_MODEL = os.getenv("LMSTUDIO_MODEL", "")
+LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "90"))
+CLOUD_API_KEY = os.getenv("OPENAI_API_KEY", "")
+CLOUD_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com").rstrip("/")
+CLOUD_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+CLOUD_TIMEOUT = float(os.getenv("CLOUD_TIMEOUT", "45"))
+
+
+def lmstudio_candidate_urls() -> list[str]:
+    """Moegliche LM-Studio-Adressen: .env zuerst, dann Standard-Ports."""
+    candidates: list[str] = []
+    for raw in (os.getenv("LMSTUDIO_URL", ""), os.getenv("LMSTUDIO_URLS", "")):
+        for item in raw.split(","):
+            item = item.strip().rstrip("/")
+            if item and item not in candidates:
+                candidates.append(item)
+    for default in ("http://localhost:1234", "http://127.0.0.1:1234"):
+        if default not in candidates:
+            candidates.append(default)
+    return candidates
 
 TIME_HORIZON_LABELS = {
     "short_term": "kurzfristig",
@@ -84,12 +104,178 @@ SECTOR_IDEA_CATALOG: dict[str, list[dict[str, str]]] = {
 
 
 async def generate_recommendations(request: RecommendRequest) -> RecommendResponse:
-    model_name = request.model or OLLAMA_MODEL
-    fallback = await build_rule_recommendation_response(request, model_name)
-    prompt = _build_prompt(request, fallback)
+    """Provider-Auswahl durch den Nutzer:
+
+    - "local":  LM Studio -> Ollama -> regelbasierter Fallback (privat, nichts verlaesst den Rechner)
+    - "cloud":  OpenAI-kompatible Cloud-API -> regelbasierter Fallback (z. B. fuer iPad/schwache Hardware)
+    - "auto":   erst lokal, dann Cloud, dann Fallback
+    """
+    preference = request.llm_preference
+    fallback_model = request.model or LMSTUDIO_MODEL or OLLAMA_MODEL
+    fallback = await build_rule_recommendation_response(request, fallback_model)
+    prompt = _build_prompt(request, fallback, detail="small")
+    cloud_prompt = _build_prompt(request, fallback, detail="large")
+
+    if preference in ("auto", "local"):
+        lmstudio_result = await _call_lmstudio(prompt, request.model)
+        if lmstudio_result is not None:
+            text, model_used = lmstudio_result
+            validated = _validate_llm_response(text, "lmstudio", model_used, fallback)
+            if validated is not None:
+                return validated
+
+        ollama_model = request.model or OLLAMA_MODEL
+        ollama_text = await _call_ollama(prompt, ollama_model)
+        if ollama_text is not None:
+            validated = _validate_llm_response(ollama_text, "ollama", ollama_model, fallback)
+            if validated is not None:
+                return validated
+
+    if preference in ("auto", "cloud"):
+        cloud_result = await _call_cloud(cloud_prompt, request.model)
+        if cloud_result is not None:
+            text, model_used = cloud_result
+            validated = _validate_llm_response(text, "cloud", model_used, fallback)
+            if validated is not None:
+                return validated
+
+    return fallback
+
+
+async def _call_cloud(prompt: str, requested_model: str | None) -> tuple[str, str] | None:
+    """OpenAI-kompatible Cloud-API. Benoetigt OPENAI_API_KEY in der .env."""
+    if not CLOUD_API_KEY:
+        return None
+    model_name = requested_model or CLOUD_MODEL
+    try:
+        async with httpx.AsyncClient(timeout=CLOUD_TIMEOUT) as client:
+            response = await client.post(
+                f"{CLOUD_BASE_URL}/v1/chat/completions",
+                headers={"Authorization": f"Bearer {CLOUD_API_KEY}"},
+                json={
+                    "model": model_name,
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": (
+                                "Du bist die Interpretationsebene eines Portfolio-Analyse-Tools. "
+                                "Antworte ausschliesslich mit einem gueltigen JSON-Objekt, ohne Markdown."
+                            ),
+                        },
+                        {"role": "user", "content": prompt},
+                    ],
+                    "temperature": 0.2,
+                    "max_tokens": 700,
+                },
+            )
+            response.raise_for_status()
+            choices = response.json().get("choices", [])
+            if not choices:
+                return None
+            content = choices[0].get("message", {}).get("content", "")
+            return (content, model_name) if content else None
+    except Exception:
+        return None
+
+
+def _validate_llm_response(
+    text: str,
+    source: str,
+    model_name: str,
+    fallback: RecommendResponse,
+) -> RecommendResponse | None:
+    """Uebernimmt nur die Textfelder der KI; strukturierte Listen bleiben regelbasiert.
+
+    Das macht die Ausgabe robust gegen Halluzination kleiner Modelle: Zahlen,
+    Gewichtungsvorschlaege und Ideen stammen immer aus der Berechnung.
+    """
+    parsed = _parse_recommendation_payload(text)
+    if not parsed:
+        return None
+
+    updates: dict[str, Any] = {}
+    for field in ("summary", "profileFit"):
+        value = parsed.get(field)
+        if isinstance(value, str) and 20 <= len(value.strip()) <= 900:
+            updates[field] = value.strip()
+    for field in ("analysisHighlights", "sectorInsights", "actionItems"):
+        value = parsed.get(field)
+        if isinstance(value, list):
+            items = [item.strip() for item in value if isinstance(item, str) and 10 <= len(item.strip()) <= 400]
+            if items:
+                updates[field] = items[:4]
+
+    if not updates:
+        return None
 
     try:
-        async with httpx.AsyncClient(timeout=4) as client:
+        return RecommendResponse.model_validate(
+            {
+                **fallback.model_dump(by_alias=True),
+                **updates,
+                "source": source,
+                "model": model_name,
+                "disclaimer": DISCLAIMER,
+            }
+        )
+    except Exception:
+        return None
+
+
+async def _call_lmstudio(prompt: str, requested_model: str | None) -> tuple[str, str] | None:
+    """OpenAI-kompatible LM Studio API. Probiert alle Kandidaten-URLs durch."""
+    async with httpx.AsyncClient(timeout=LLM_TIMEOUT, trust_env=False) as client:
+        for base_url in lmstudio_candidate_urls():
+            try:
+                models_response = await client.get(f"{base_url}/v1/models", timeout=2.5)
+                models_response.raise_for_status()
+                loaded = models_response.json().get("data", [])
+            except Exception:
+                continue
+
+            model_name = requested_model or LMSTUDIO_MODEL
+            if not model_name:
+                if not loaded:
+                    continue
+                model_name = str(loaded[0].get("id", ""))
+                if not model_name:
+                    continue
+
+            try:
+                response = await client.post(
+                    f"{base_url}/v1/chat/completions",
+                    json={
+                        "model": model_name,
+                        "messages": [
+                            {
+                                "role": "system",
+                                "content": (
+                                    "Du bist die Interpretationsebene eines Portfolio-Analyse-Tools. "
+                                    "Antworte ausschliesslich mit einem gueltigen JSON-Objekt, ohne Markdown."
+                                ),
+                            },
+                            {"role": "user", "content": prompt},
+                        ],
+                        "temperature": 0.2,
+                        "max_tokens": 700,
+                        "stream": False,
+                    },
+                )
+                response.raise_for_status()
+                choices = response.json().get("choices", [])
+                if not choices:
+                    continue
+                content = choices[0].get("message", {}).get("content", "")
+                if content:
+                    return (content, model_name)
+            except Exception:
+                continue
+    return None
+
+
+async def _call_ollama(prompt: str, model_name: str) -> str | None:
+    try:
+        async with httpx.AsyncClient(timeout=LLM_TIMEOUT, trust_env=False) as client:
             response = await client.post(
                 f"{OLLAMA_URL}/api/generate",
                 json={
@@ -101,24 +287,9 @@ async def generate_recommendations(request: RecommendRequest) -> RecommendRespon
             )
             response.raise_for_status()
             text = response.json().get("response", "")
+            return text or None
     except Exception:
-        return fallback
-
-    parsed = _parse_recommendation_payload(text)
-    if not parsed:
-        return fallback
-
-    try:
-        return RecommendResponse.model_validate(
-            {
-                **parsed,
-                "source": "ollama",
-                "model": model_name,
-                "disclaimer": DISCLAIMER,
-            }
-        )
-    except Exception:
-        return fallback
+        return None
 
 
 async def build_rule_recommendation_response(request: RecommendRequest, model_name: str) -> RecommendResponse:
@@ -421,35 +592,118 @@ def _profile_label(investor_profile: InvestorProfile) -> str:
     return f"{TIME_HORIZON_LABELS[investor_profile.time_horizon]}-{RISK_STYLE_LABELS[investor_profile.risk_style]}"
 
 
-def _build_prompt(request: RecommendRequest, fallback: RecommendResponse) -> str:
-    return f"""
-Du bist die KI-Interpretationsebene eines Ausbildungsprojekts fuer Privatanleger.
-Du gibst keine Anlageberatung und keine aggressiven Kauf- oder Verkaufssignale.
-Du interpretierst ausschliesslich die vorliegenden historischen Kennzahlen, Brancheninformationen und optionalen News-Hinweise.
+def _compact_analysis(analysis: dict[str, Any], detail: str = "small") -> dict[str, Any]:
+    """Reduziert die Analyse auf das, was die KI zum Formulieren braucht.
 
-Nutzerprofil:
-- Zeithorizont: {TIME_HORIZON_LABELS[request.investor_profile.time_horizon]}
-- Risikotyp: {RISK_STYLE_LABELS[request.investor_profile.risk_style]}
-- Ziel: {GOAL_LABELS[request.goal_preset]}
-- Zusatzhinweis: {request.goal_note or "kein Zusatzhinweis"}
+    detail="small": fuer lokale Modelle mit 4k-8k Kontext (~1k Tokens).
+    detail="large": fuer Cloud-Modelle mit grossem Kontext - zusaetzlich volle
+    Korrelationsmatrix, monatlich verdichtete Performance und Frontier-Eckpunkte.
+    Rohe Tageskurse bekommt kein Modell: sie verbessern die Erklaerung nicht,
+    kosten aber Tokens und erhoehen das Halluzinationsrisiko.
+    """
+    assets = [
+        {
+            "ticker": a.get("ticker"),
+            "name": a.get("name"),
+            "sector": a.get("sector"),
+            "weight": round(float(a.get("weight", 0)), 4),
+            "expectedReturn": round(float(a.get("expectedReturn", 0)), 4),
+            "volatility": round(float(a.get("volatility", 0)), 4),
+        }
+        for a in analysis.get("assets", [])
+    ]
 
-Analysebasis:
-{json.dumps(request.analysis, ensure_ascii=False)}
+    metrics_keys = ("expectedReturn", "volatility", "sharpeRatio", "valueAtRisk", "diversificationScore")
 
-Regelbasierter Ausgangsentwurf:
-{fallback.model_dump_json(by_alias=True, ensure_ascii=False)}
+    def slim_metrics(source: dict[str, Any]) -> dict[str, Any]:
+        return {k: round(float(source.get(k, 0)), 4) for k in metrics_keys}
 
-Antworte ausschliesslich als gueltiges JSON-Objekt mit exakt diesen Feldern:
-summary, profileFit, analysisHighlights, sectorInsights, actionItems, weightAdjustments, newIdeas, reviewCandidates, newsSignals
+    # Nur die staerksten Korrelationen statt der ganzen Matrix
+    high_correlations: list[dict[str, Any]] = []
+    matrix = analysis.get("correlationMatrix", {})
+    tickers = matrix.get("tickers", [])
+    values = matrix.get("values", [])
+    for i in range(len(tickers)):
+        for j in range(i + 1, len(tickers)):
+            try:
+                value = float(values[i][j])
+            except (IndexError, TypeError, ValueError):
+                continue
+            if abs(value) >= 0.75:
+                high_correlations.append({"pair": f"{tickers[i]}/{tickers[j]}", "correlation": round(value, 2)})
+    high_correlations.sort(key=lambda item: -abs(item["correlation"]))
 
-Regeln:
-- keine Markdown-Formatierung
-- keine weiteren Felder
-- keine Prognosen
-- Gewichtungen als Dezimalwerte zwischen 0 und 1
-- News nur aus newsSignals, nichts erfinden
-- newIdeas maximal 3, reviewCandidates maximal 3
-""".strip()
+    compact: dict[str, Any] = {
+        "mode": analysis.get("mode"),
+        "zeitraum": f"{analysis.get('startDate')} bis {analysis.get('endDate')}",
+        "assets": assets,
+        "metrics": slim_metrics(analysis.get("metrics", {})),
+        "optimizedMetrics": slim_metrics(analysis.get("optimizedMetrics", {})),
+        "optimizedWeights": [round(float(w), 4) for w in analysis.get("optimizedWeights", [])],
+        "sectorAllocation": [
+            {"sector": s.get("sector"), "weight": round(float(s.get("weight", 0)), 4)}
+            for s in analysis.get("sectorAllocation", [])
+        ],
+        "riskFindings": [
+            {"type": f.get("type"), "severity": f.get("severity"), "message": f.get("message")}
+            for f in analysis.get("riskFindings", [])
+        ],
+        "hoheKorrelationen": high_correlations[:4],
+    }
+
+    if detail == "large":
+        compact["korrelationsmatrix"] = {
+            "tickers": tickers,
+            "values": [[round(float(v), 2) for v in row] for row in values],
+        }
+        # Performance monatlich verdichten statt taeglich
+        performance = analysis.get("performance", [])
+        if performance:
+            step = max(1, len(performance) // 24)
+            compact["performanceVerlauf"] = [
+                {k: (round(float(v), 2) if isinstance(v, (int, float)) else v) for k, v in point.items()}
+                for point in performance[::step]
+            ][:24]
+        frontier = analysis.get("frontier", [])
+        marked = [f for f in frontier if f.get("kind") in ("current", "optimized")]
+        if marked:
+            compact["frontierPunkte"] = [
+                {"kind": f.get("kind"), "risk": round(float(f.get("risk", 0)), 4), "return": round(float(f.get("return", 0)), 4)}
+                for f in marked
+            ]
+
+    return compact
+
+
+# Textfelder, die die KI formulieren soll - strukturierte Listen bleiben regelbasiert.
+LLM_TEXT_FIELDS = ("summary", "profileFit", "analysisHighlights", "sectorInsights", "actionItems")
+
+
+def _build_prompt(request: RecommendRequest, fallback: RecommendResponse, detail: str = "small") -> str:
+    compact = _compact_analysis(request.analysis, detail)
+    draft = {
+        "summary": fallback.summary,
+        "profileFit": fallback.profile_fit,
+        "analysisHighlights": fallback.analysis_highlights,
+        "sectorInsights": fallback.sector_insights,
+        "actionItems": fallback.action_items,
+    }
+    return f"""Du erklaerst Privatanlegern die Ergebnisse einer regelbasierten Portfolioanalyse.
+Du gibst keine Anlageberatung, keine Kauf-/Verkaufssignale, keine Prognosen.
+Nutze ausschliesslich die folgenden berechneten Werte. Erfinde keine Zahlen.
+
+Nutzerprofil: {TIME_HORIZON_LABELS[request.investor_profile.time_horizon]}, {RISK_STYLE_LABELS[request.investor_profile.risk_style]}, Ziel: {GOAL_LABELS[request.goal_preset]}.
+Zusatzhinweis: {request.goal_note or "keiner"}
+
+Berechnete Analyse (Gewichte/Renditen/Volatilitaet als Dezimalzahlen):
+{json.dumps(compact, ensure_ascii=False)}
+
+Vorformulierter Entwurf (verbessere Klarheit und Verstaendlichkeit, bleibe inhaltlich treu):
+{json.dumps(draft, ensure_ascii=False)}
+
+Antworte NUR mit einem JSON-Objekt mit exakt diesen Feldern:
+{{"summary": string, "profileFit": string, "analysisHighlights": string[], "sectorInsights": string[], "actionItems": string[]}}
+Regeln: kein Markdown, keine weiteren Felder, Deutsch, jede Aussage muss sich auf eine der obigen Zahlen stuetzen, maximal 4 Eintraege pro Liste.""".strip()
 
 
 def _parse_recommendation_payload(text: str) -> dict[str, Any] | None:

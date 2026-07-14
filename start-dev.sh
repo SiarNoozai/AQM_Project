@@ -4,7 +4,20 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKEND_DIR="${ROOT_DIR}/backend"
-BACKEND_PYTHON="${BACKEND_DIR}/.venv/bin/python"
+
+# Venv-Python plattformunabhaengig aufloesen:
+# Linux/macOS -> .venv/bin/python, Windows (Git Bash) -> .venv/Scripts/python.exe
+resolve_backend_python() {
+  if [[ -x "${BACKEND_DIR}/.venv/bin/python" ]]; then
+    echo "${BACKEND_DIR}/.venv/bin/python"
+  elif [[ -x "${BACKEND_DIR}/.venv/Scripts/python.exe" ]]; then
+    echo "${BACKEND_DIR}/.venv/Scripts/python.exe"
+  else
+    echo ""
+  fi
+}
+
+BACKEND_PYTHON="$(resolve_backend_python)"
 
 cleanup() {
   if [[ -n "${FRONTEND_PID:-}" ]] && kill -0 "${FRONTEND_PID}" 2>/dev/null; then
@@ -79,18 +92,25 @@ if [[ ! -d "${ROOT_DIR}/node_modules" ]]; then
   npm install
 fi
 
-if [[ ! -x "${BACKEND_PYTHON}" ]]; then
+if [[ -z "${BACKEND_PYTHON}" ]]; then
   if command -v uv >/dev/null 2>&1; then
     echo "[setup] Backend-Venv fehlt. Fuehre uv sync aus..."
     (
       cd "${BACKEND_DIR}"
       uv sync
     )
+    BACKEND_PYTHON="$(resolve_backend_python)"
   else
     echo "[error] Backend-Venv fehlt und 'uv' ist nicht installiert."
     echo "[hint] Installiere uv mit: python3 -m pip install uv"
     exit 1
   fi
+fi
+
+if [[ -z "${BACKEND_PYTHON}" ]]; then
+  echo "[error] Konnte kein Python im Backend-Venv finden (weder .venv/bin noch .venv/Scripts)."
+  echo "[hint] Loesche backend/.venv und starte das Skript erneut."
+  exit 1
 fi
 
 ensure_port_is_free 8000 "Backend"
@@ -99,7 +119,7 @@ ensure_port_is_free 5173 "Frontend"
 echo "[start] Backend auf http://127.0.0.1:8000"
 (
   cd "${BACKEND_DIR}"
-  exec "${BACKEND_PYTHON}" -m uvicorn main:app --host 127.0.0.1 --port 8000
+  exec "${BACKEND_PYTHON}" -m uvicorn main:app --reload --host 127.0.0.1 --port 8000
 ) &
 BACKEND_PID=$!
 

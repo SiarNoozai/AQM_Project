@@ -57,7 +57,11 @@ Die Quant-Logik liegt in `backend/analysis.py`:
 
 ## KI-Komponente
 
-Die KI bekommt nur strukturierte Analyseergebnisse. Sie darf keine Kurse, Kennzahlen oder Marktdaten erfinden. Wenn Ollama nicht erreichbar ist, erzeugt das Backend regelbasierte Empfehlungen, einen strukturierten Bericht und Antworten auf Rueckfragen.
+Die KI bekommt nur strukturierte Analyseergebnisse. Sie darf keine Kurse, Kennzahlen oder Marktdaten erfinden. Die Provider-Kette ist: LM Studio (OpenAI-kompatible API, Port 1234) -> Ollama (Port 11434) -> regelbasierter Fallback. Beide LLM-Provider laufen vollstaendig lokal; Portfoliodaten verlassen den Rechner nicht. Wenn kein Provider erreichbar ist, erzeugt das Backend regelbasierte Empfehlungen, einen strukturierten Bericht und Antworten auf Rueckfragen.
+
+## Lokaler LLM-Kompatibilitaets-Check
+
+`backend/system_check.py` erkennt RAM und GPU/VRAM des Rechners und schaetzt, welche lokalen Sprachmodelle (Q4_K_M/GGUF) lauffaehig sind. Die Schaetzlogik ist inspiriert von LLMcalc (github.com/Raskoll2/LLMcalc). Der Endpunkt `GET /api/system/llm-check` liefert Hardware-Infos, Modell-Einschaetzungen und den Status der lokalen Provider. Das Frontend zeigt das Ergebnis im Panel "Lokale KI & Datenschutz".
 
 ## Speicherung
 
