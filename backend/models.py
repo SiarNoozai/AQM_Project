@@ -55,6 +55,11 @@ class PortfolioMetrics(BaseModel):
     sharpe_ratio: float = Field(alias="sharpeRatio")
     value_at_risk: float = Field(alias="valueAtRisk")
     diversification_score: float = Field(alias="diversificationScore")
+    effective_holdings: float = Field(default=0.0, alias="effectiveHoldings")
+    diversification_ratio: float = Field(default=0.0, alias="diversificationRatio")
+    value_at_risk_horizon_days: int = Field(default=1, alias="valueAtRiskHorizonDays")
+    value_at_risk_method: Literal["historisch"] = Field(default="historisch", alias="valueAtRiskMethod")
+    annualized_return_geometric: float = Field(default=0.0, alias="annualizedReturnGeometric")
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -74,6 +79,7 @@ class AssetResult(BaseModel):
     expected_return: float = Field(alias="expectedReturn")
     volatility: float
     last_price: float = Field(alias="lastPrice")
+    annualized_return_geometric: float = Field(default=0.0, alias="annualizedReturnGeometric")
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -84,15 +90,13 @@ class SectorAllocationItem(BaseModel):
     tickers: list[str]
 
 
-class FrontierPoint(BaseModel):
-    id: int
-    risk: float
-    return_: float = Field(alias="return")
-    sharpe: float
-    weights: list[float]
-    kind: Literal["simulation", "current", "optimized"]
-
+class OptimizationSettings(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
+
+    objective: str
+    max_weight: float = Field(alias="maxWeight")
+    shrinkage_intensity: float = Field(alias="shrinkageIntensity")
+    converged: bool
 
 
 class CorrelationMatrix(BaseModel):
@@ -120,7 +124,7 @@ class AnalysisResponse(BaseModel):
     correlation_matrix: CorrelationMatrix = Field(alias="correlationMatrix")
     covariance_matrix: list[list[float]] = Field(alias="covarianceMatrix")
     performance: list[dict[str, float | str]]
-    frontier: list[FrontierPoint]
+    optimization_settings: OptimizationSettings = Field(alias="optimizationSettings")
     recommendations: list[str]
     recommendation_source: Literal["rules"] = Field(alias="recommendationSource")
     disclaimer: str
@@ -175,6 +179,14 @@ class NewsSignal(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
+class OptimizationBasis(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    objective: str = "max_sharpe"
+    max_weight: float = Field(default=0.35, alias="maxWeight")
+    description: str = "Neutrale historische Max-Sharpe-Vergleichsvariante."
+
+
 class RecommendResponse(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -190,6 +202,71 @@ class RecommendResponse(BaseModel):
     source: RecommendationSource
     model: str
     disclaimer: str
+    optimization_basis: OptimizationBasis = Field(default_factory=OptimizationBasis, alias="optimizationBasis")
+    fallback_reason: str | None = Field(default=None, alias="fallbackReason")
+    attempted_backends: list[str] = Field(default_factory=list, alias="attemptedBackends")
+    news_available: bool = Field(default=True, alias="newsAvailable")
+
+
+class ChatMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(max_length=2000)
+
+
+class PortfolioPreview(BaseModel):
+    tickers: list[str] = Field(default_factory=list, max_length=10)
+    weights: list[float] = Field(default_factory=list, max_length=10)
+
+
+class WizardProposal(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    focus_areas: list[FocusArea] = Field(alias="focusAreas", min_length=1, max_length=5)
+    time_horizon: TimeHorizon = Field(alias="timeHorizon")
+    risk_style: RiskStyle = Field(alias="riskStyle")
+    goal_preset: GoalPreset = Field(alias="goalPreset")
+    goal_note: str = Field(alias="goalNote", max_length=600)
+    reasoning: str = Field(max_length=600)
+
+
+class GoalChatRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    messages: list[ChatMessage] = Field(default_factory=list, max_length=20)
+    portfolio_preview: PortfolioPreview | None = Field(default=None, alias="portfolioPreview")
+    current_selection: WizardProposal | None = Field(default=None, alias="currentSelection")
+
+
+class GoalChatResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    reply: str = Field(max_length=1500)
+    follow_up_question: str | None = Field(default=None, alias="followUpQuestion", max_length=600)
+    proposal: WizardProposal | None = None
+    confidence: Literal["low", "medium", "high"]
+    source: Literal["ollama", "rules"]
+    fallback_reason: str | None = Field(default=None, alias="fallbackReason")
+    disclaimer: str
+
+
+class AskRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    question: str = Field(max_length=600)
+    history: list[ChatMessage] = Field(default_factory=list, max_length=20)
+    analysis: dict[str, Any]
+    recommendation: RecommendResponse | None = None
+    llm_preference: LlmPreference = Field(default="auto", alias="llmPreference")
+
+
+class AskResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    answer: str = Field(max_length=1500)
+    used_metrics: list[str] = Field(default_factory=list, alias="usedMetrics")
+    source: Literal["ollama", "cloud", "rules"]
+    fallback_reason: str | None = Field(default=None, alias="fallbackReason")
+    disclaimer: str
 
 
 class SecuritySearchResult(BaseModel):
@@ -204,5 +281,8 @@ class SecuritySearchResponse(BaseModel):
 
 
 class ExportRequest(BaseModel):
-    analysis: dict[str, Any]
+    analysis: AnalysisResponse
     recommendations: list[str] | None = None
+    portfolio_name: str = Field(default="Portfolioanalyse", alias="portfolioName", max_length=120)
+
+    model_config = ConfigDict(populate_by_name=True)

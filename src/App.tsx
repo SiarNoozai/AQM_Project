@@ -1,4 +1,3 @@
-import type { ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
@@ -35,15 +34,14 @@ import {
   DEFAULT_EXPECTED_RETURN,
   DEFAULT_VOLATILITY,
   type AssetInput,
-  buildFallbackCorrelationMatrix,
   createAssetInput,
   initialAssets,
   syncAssetMetadata,
 } from "./data/assets";
 import {
   type ApiAnalysis,
+  type ApiMetrics,
   type ApiRiskFinding,
-  type ApiSectorAllocation,
   type FocusArea,
   type GoalPreset,
   type InvestorProfile,
@@ -65,22 +63,16 @@ import {
   loadSavedPortfolios,
   savePortfolioRecord,
 } from "./lib/portfolioStorage";
+import { AskPanel, type AskConversationMessage } from "./components/AskPanel";
+import { AnalysisSkeleton } from "./components/AnalysisSkeleton";
+import { CorrelationHeatmap } from "./components/CorrelationHeatmap";
+import { GoalChatPanel } from "./components/GoalChatPanel";
+import { MetricCard } from "./components/MetricCard";
+import { SectorAllocationBars } from "./components/SectorAllocationBars";
+import type { ChatMessage, WizardProposal } from "./lib/chatClient";
 import {
-  buildEfficientFrontier,
-  buildPerformanceSeries,
-  calculatePortfolioMetrics,
   formatPercent,
-  getOptimizedPoint,
-  normalizeWeights,
 } from "./lib/portfolioMath";
-
-type MetricCardProps = {
-  label: string;
-  value: string;
-  helper: string;
-  icon: ReactNode;
-  tone?: "positive" | "warning" | "neutral";
-};
 
 type DisplayAsset = {
   id: string;
@@ -110,23 +102,23 @@ const periodOptions: Array<{ label: string; value: PeriodPreset }> = [
 const focusAreaOptions: Array<{ id: FocusArea; label: string; description: string }> = [
   {
     id: "summary",
-    label: "Gesamtueberblick",
+    label: "Gesamtüberblick",
     description: "Fasst die wichtigsten Kennzahlen und das Gesamtbild kompakt zusammen.",
   },
   {
     id: "sector",
     label: "Branchengewichtung",
-    description: "Zeigt, ob dein Portfolio stark in einzelnen Branchen gebuendelt ist.",
+    description: "Zeigt, ob dein Portfolio stark in einzelnen Branchen gebündelt ist.",
   },
   {
     id: "concentration",
     label: "Konzentrationsrisiken",
-    description: "Prueft, ob einzelne Positionen oder Schwerpunkte zu dominant sind.",
+    description: "Prüft, ob einzelne Positionen oder Schwerpunkte zu dominant sind.",
   },
   {
     id: "diversification",
     label: "Diversifikation & Korrelation",
-    description: "Betrachtet Branchenbreite und historisch aehnliche Bewegungen im Portfolio.",
+    description: "Betrachtet Branchenbreite und historisch ähnliche Bewegungen im Portfolio.",
   },
   {
     id: "risk_drivers",
@@ -139,17 +131,17 @@ const timeHorizonOptions: Array<{ id: TimeHorizon; label: string; description: s
   {
     id: "short_term",
     label: "Kurzfristig",
-    description: "Die KI priorisiert naheliegende Schwankungs- und Nachrichtenrisiken, ohne Trading-Signale zu geben.",
+    description: "Die Auswertung priorisiert naheliegende Schwankungs- und Nachrichtenrisiken, ohne Trading-Signale zu geben.",
   },
   {
     id: "mid_term",
     label: "Mittelfristig",
-    description: "Die KI sucht eine tragfaehige Balance zwischen Stabilitaet und Chancen.",
+    description: "Die Auswertung sucht eine tragfähige Balance zwischen Stabilität und Chancen.",
   },
   {
     id: "long_term",
     label: "Langfristig",
-    description: "Die KI achtet staerker auf robuste Branchenbreite und nachhaltige Portfolio-Struktur.",
+    description: "Die Auswertung achtet stärker auf robuste Branchenbreite und nachhaltige Portfolio-Struktur.",
   },
 ];
 
@@ -167,7 +159,7 @@ const riskStyleOptions: Array<{ id: RiskStyle; label: string; description: strin
   {
     id: "aggressive",
     label: "Aggressiv",
-    description: "Mehr Toleranz fuer Wachstumsschwerpunkte, aber weiter mit Blick auf Konzentrationsrisiken.",
+    description: "Mehr Toleranz für Wachstumsschwerpunkte, aber weiter mit Blick auf Konzentrationsrisiken.",
   },
 ];
 
@@ -175,22 +167,22 @@ const goalPresetOptions: Array<{ id: GoalPreset; label: string; description: str
   {
     id: "diversify_broadly",
     label: "Breit diversifizieren",
-    description: "Die KI soll vor allem Branchenbreite, robustere Verteilung und geringere Klumpenrisiken suchen.",
+    description: "Die Auswertung soll vor allem Branchenbreite, robustere Verteilung und geringere Klumpenrisiken suchen.",
   },
   {
     id: "keep_tech_focus",
     label: "Tech-Fokus beibehalten",
-    description: "Die KI darf Wachstumsschwerpunkte in Tech akzeptieren, soll aber die Struktur gezielter absichern.",
+    description: "Die Auswertung darf Wachstumsschwerpunkte in Tech akzeptieren, soll aber die Struktur gezielter absichern.",
   },
   {
     id: "defensive",
     label: "Defensiver aufstellen",
-    description: "Die KI priorisiert niedrigere Schwankung, stabilere Sektoren und geringere Einzelrisiken.",
+    description: "Die Auswertung priorisiert niedrigere Schwankung, stabilere Sektoren und geringere Einzelrisiken.",
   },
   {
     id: "balanced",
     label: "Rendite-Risiko ausbalancieren",
-    description: "Die KI sucht eine nachvollziehbare Mittelposition zwischen Chancen und Risiko.",
+    description: "Die Auswertung sucht eine nachvollziehbare Mittelposition zwischen Chancen und Risiko.",
   },
 ];
 
@@ -208,7 +200,7 @@ const llmPreferenceOptions: Array<{ id: LlmPreference; label: string; descriptio
   {
     id: "cloud",
     label: "Cloud-API",
-    description: "Fuer Geraete ohne lokale KI (z. B. Tablet). Daten gehen an den API-Anbieter.",
+    description: "OpenAI-kompatibler Anbieter, z. B. NVIDIA NIM. Daten gehen an den API-Anbieter.",
   },
 ];
 
@@ -222,10 +214,30 @@ const percentFormatter = new Intl.NumberFormat("de-DE", {
 
 const MIN_SEARCH_QUERY_LENGTH = 2;
 
+const chartDashPatterns = ["", "7 4", "3 3", "10 4 2 4"];
+
+const chartValueFormatter = new Intl.NumberFormat("de-DE", {
+  minimumFractionDigits: 1,
+  maximumFractionDigits: 1,
+});
+
+const EMPTY_METRICS: ApiMetrics = {
+  expectedReturn: 0,
+  volatility: 0,
+  sharpeRatio: 0,
+  valueAtRisk: 0,
+  diversificationScore: 0,
+  effectiveHoldings: 0,
+  diversificationRatio: 0,
+  valueAtRiskHorizonDays: 1,
+  valueAtRiskMethod: "historisch",
+  annualizedReturnGeometric: 0,
+};
+
 const quickFollowUpQuestions = [
-  "Welche Position traegt aktuell das groesste Risiko?",
-  "Was wuerde die Diversifikation am staerksten verbessern?",
-  "Welche vorgeschlagene Anpassung sollte ich zuerst pruefen?",
+  "Welche Position trägt aktuell das größte Risiko?",
+  "Was würde die Diversifikation am stärksten verbessern?",
+  "Welche vorgeschlagene Anpassung sollte ich zuerst prüfen?",
 ];
 
 type AddPositionOption = {
@@ -254,14 +266,14 @@ const addPositionOptions: AddPositionOption[] = [
   {
     id: "bond",
     label: "Anleihe",
-    description: "Stabilere Beimischung fuer mehr Ruhe im Portfolio.",
+    description: "Stabilere Beimischung für mehr Ruhe im Portfolio.",
     ticker: "AGG",
-    accent: "#0f4c81",
+    accent: "#7c3aed",
   },
   {
     id: "custom",
     label: "Leere Position",
-    description: "Freien Ticker selbst waehlen oder anschliessend suchen.",
+    description: "Freien Ticker selbst wählen oder anschließend suchen.",
     ticker: "",
     accent: "#64748b",
   },
@@ -271,6 +283,7 @@ function App() {
   const [assets, setAssets] = useState<AssetInput[]>(initialAssets);
   const [periodYears, setPeriodYears] = useState<PeriodPreset>(5);
   const [analysis, setAnalysis] = useState<ApiAnalysis | null>(null);
+  const [analysisIsStale, setAnalysisIsStale] = useState(false);
   const [recommendation, setRecommendation] = useState<RecommendationResult | null>(null);
   const [llmCheck, setLlmCheck] = useState<LlmCheckResponse | null>(null);
   const [isLoadingLlmCheck, setIsLoadingLlmCheck] = useState(false);
@@ -300,28 +313,16 @@ function App() {
   const [isExporting, setIsExporting] = useState<"csv" | "pdf" | null>(null);
   const [exportFeedback, setExportFeedback] = useState<string | null>(null);
   const [lastFollowUp, setLastFollowUp] = useState<string | null>(null);
+  const [goalChatMessages, setGoalChatMessages] = useState<ChatMessage[]>([]);
+  const [goalChatProposal, setGoalChatProposal] = useState<WizardProposal | null>(null);
+  const [askMessages, setAskMessages] = useState<AskConversationMessage[]>([]);
+  const [chatResetNotice, setChatResetNotice] = useState<string | null>(null);
+  const [goalProposalApplied, setGoalProposalApplied] = useState(false);
   const [isAddMenuOpen, setIsAddMenuOpen] = useState(false);
   const addMenuRef = useRef<HTMLDivElement | null>(null);
 
   const { startDate, endDate } = useMemo(() => buildPeriodRange(periodYears), [periodYears]);
   const debouncedSearchQuery = useDebouncedValue(searchQuery, 300);
-  const demoWeights = useMemo(() => normalizeWeights(assets), [assets]);
-  const demoFrontier = useMemo(() => buildEfficientFrontier(assets, demoWeights), [assets, demoWeights]);
-  const demoOptimizedPoint = useMemo(() => getOptimizedPoint(demoFrontier), [demoFrontier]);
-  const demoMetrics = useMemo(() => calculatePortfolioMetrics(assets, demoWeights), [assets, demoWeights]);
-  const demoOptimizedMetrics = useMemo(
-    () => calculatePortfolioMetrics(assets, demoOptimizedPoint.weights),
-    [assets, demoOptimizedPoint.weights],
-  );
-  const demoPerformance = useMemo(
-    () => buildPerformanceSeries(assets, demoWeights, demoOptimizedPoint.weights),
-    [assets, demoOptimizedPoint.weights, demoWeights],
-  );
-  const demoRiskFindings = useMemo(
-    () => buildDemoRiskFindings(assets, demoWeights, demoMetrics, buildFallbackCorrelationMatrix(assets)),
-    [assets, demoMetrics, demoWeights],
-  );
-
   const displayAssets: DisplayAsset[] = useMemo(() => {
     if (!analysis) {
       return assets.map((asset, index) => ({
@@ -351,14 +352,14 @@ function App() {
     });
   }, [analysis, assets]);
 
-  const activeWeights = analysis ? analysis.assets.map((asset) => asset.weight) : demoWeights;
-  const activeMetrics = analysis?.metrics ?? demoMetrics;
-  const activeOptimizedMetrics = analysis?.optimizedMetrics ?? demoOptimizedMetrics;
-  const activeOptimizedWeights = analysis?.optimizedWeights ?? demoOptimizedPoint.weights;
-  const activePerformance = analysis?.performance ?? demoPerformance;
-  const activeRiskFindings = analysis?.riskFindings ?? demoRiskFindings;
-  const activeCorrelationMatrix = analysis?.correlationMatrix.values ?? buildFallbackCorrelationMatrix(assets);
-  const activeSectorAllocation = analysis?.sectorAllocation ?? buildFallbackSectorAllocation(displayAssets, activeWeights);
+  const activeWeights = analysis?.assets.map((asset) => asset.weight) ?? [];
+  const activeMetrics = analysis?.metrics ?? EMPTY_METRICS;
+  const activeOptimizedMetrics = analysis?.optimizedMetrics ?? EMPTY_METRICS;
+  const activeOptimizedWeights = analysis?.optimizedWeights ?? [];
+  const activePerformance = analysis?.performance ?? [];
+  const activeRiskFindings = analysis?.riskFindings ?? [];
+  const activeCorrelationMatrix = analysis?.correlationMatrix.values ?? [];
+  const activeSectorAllocation = analysis?.sectorAllocation ?? [];
   const isLive = analysis?.mode === "live";
   const canOpenAiWorkspace = Boolean(analysis);
   const isSearchOpen = searchRowIndex !== null;
@@ -512,12 +513,36 @@ function App() {
     setAiError(null);
     setIsGeneratingRecommendation(false);
     setLastFollowUp(null);
+    setGoalChatMessages([]);
+    setGoalChatProposal(null);
+    setAskMessages([]);
+    setChatResetNotice(null);
+    setGoalProposalApplied(false);
   }
 
   function resetDerivedState() {
     setAnalysis(null);
+    setAnalysisIsStale(false);
     setError(null);
     resetAiState();
+  }
+
+  function invalidateAnalysisInputs() {
+    setAnalysisIsStale(Boolean(analysis));
+    setAnalysis(null);
+    setRecommendation(null);
+    setError(null);
+    setAiError(null);
+  }
+
+  function clearChatsForNewAnalysis() {
+    if (goalChatMessages.length > 0 || askMessages.length > 0) {
+      setChatResetNotice("Die Chatverläufe wurden für die neue Auswertung geleert.");
+    }
+    setGoalChatMessages([]);
+    setGoalChatProposal(null);
+    setAskMessages([]);
+    setGoalProposalApplied(false);
   }
 
   function invalidateRecommendationResult() {
@@ -542,7 +567,7 @@ function App() {
   }
 
   function updateAsset(index: number, changes: Partial<AssetInput>) {
-    resetDerivedState();
+    invalidateAnalysisInputs();
     setAssets((currentAssets) =>
       currentAssets.map((asset, assetIndex) =>
         assetIndex === index ? syncAssetMetadata({ ...asset, ...changes }, assetIndex) : syncAssetMetadata(asset, assetIndex),
@@ -551,7 +576,7 @@ function App() {
   }
 
   function appendAsset(seed: Partial<Omit<AssetInput, "id">>, options: { preserveName?: boolean } = {}) {
-    resetDerivedState();
+    invalidateAnalysisInputs();
     setAssets((currentAssets) => {
       if (currentAssets.length >= 10) {
         return currentAssets;
@@ -580,7 +605,7 @@ function App() {
     if (assets.length <= 2) {
       return;
     }
-    resetDerivedState();
+    invalidateAnalysisInputs();
     setAssets((currentAssets) =>
       currentAssets
         .filter((_, assetIndex) => assetIndex !== index)
@@ -619,6 +644,7 @@ function App() {
 
     setAssets(record.assets.map((asset, index) => syncAssetMetadata({ ...asset }, index, { preserveName: true })));
     setAnalysis(record.lastAnalysis ?? null);
+    setAnalysisIsStale(false);
     resetAiState();
     setError(null);
     setPortfolioName(record.name);
@@ -633,12 +659,12 @@ function App() {
     const record = savedPortfolios.find((item) => item.id === activeSavedPortfolioId);
     setSavedPortfolios(deletePortfolioRecord(savedPortfolios, activeSavedPortfolioId));
     setActiveSavedPortfolioId("");
-    setSaveFeedback(record ? `„${record.name}“ geloescht` : "Portfolio geloescht");
+    setSaveFeedback(record ? `„${record.name}“ gelöscht` : "Portfolio gelöscht");
   }
 
   function handlePeriodChange(nextValue: PeriodPreset) {
     setPeriodYears(nextValue);
-    resetDerivedState();
+    invalidateAnalysisInputs();
   }
 
   function applySearchSelection(result: SecuritySearchResult) {
@@ -646,7 +672,7 @@ function App() {
       return;
     }
 
-    resetDerivedState();
+    invalidateAnalysisInputs();
     setAssets((currentAssets) =>
       currentAssets.map((asset, assetIndex) =>
         assetIndex === searchRowIndex
@@ -682,7 +708,7 @@ function App() {
     }
 
     if (normalizedAssets.some((asset) => !asset.ticker)) {
-      setError("Bitte fuelle fuer alle Positionen einen Ticker aus.");
+      setError("Bitte fülle für alle Positionen einen Ticker aus.");
       setAssets(normalizedAssets);
       return;
     }
@@ -702,7 +728,10 @@ function App() {
     setAssets(normalizedAssets);
     setIsLoading(true);
     setError(null);
-    resetAiState();
+    setAnalysisIsStale(false);
+    setRecommendation(null);
+    setAiError(null);
+    clearChatsForNewAnalysis();
 
     try {
       const nextAnalysis = await analyzePortfolio({
@@ -715,6 +744,7 @@ function App() {
         varConfidence: 0.95,
       });
       setAnalysis(nextAnalysis);
+      setAnalysisIsStale(false);
     } catch (caughtError) {
       setAnalysis(null);
       setError(caughtError instanceof Error ? caughtError.message : "Analyse konnte nicht geladen werden.");
@@ -746,21 +776,36 @@ function App() {
   function selectTimeHorizon(nextValue: TimeHorizon) {
     invalidateRecommendationResult();
     setSelectedTimeHorizon(nextValue);
+    setGoalProposalApplied(false);
   }
 
   function selectRiskStyle(nextValue: RiskStyle) {
     invalidateRecommendationResult();
     setSelectedRiskStyle(nextValue);
+    setGoalProposalApplied(false);
   }
 
   function selectGoalPreset(nextValue: GoalPreset) {
     invalidateRecommendationResult();
     setSelectedGoalPreset(nextValue);
+    setGoalProposalApplied(false);
   }
 
   function updateGoalNote(nextValue: string) {
     invalidateRecommendationResult();
     setGoalNote(nextValue);
+    setGoalProposalApplied(false);
+  }
+
+  function applyGoalProposal(proposal: WizardProposal) {
+    setSelectedFocusAreas(proposal.focusAreas);
+    setSelectedTimeHorizon(proposal.timeHorizon);
+    setSelectedRiskStyle(proposal.riskStyle);
+    setSelectedGoalPreset(proposal.goalPreset);
+    setGoalNote(proposal.goalNote);
+    setGoalProposalApplied(true);
+    setActiveAiStep(4);
+    setAiError(null);
   }
 
   function canProceedFromStep(step: AiStep) {
@@ -795,11 +840,11 @@ function App() {
 
   async function handleGenerateRecommendation(followUpQuestion?: string) {
     if (!analysis) {
-      setAiError("Bitte fuehre zuerst eine Analyse durch.");
+      setAiError("Bitte führe zuerst eine Analyse durch.");
       return;
     }
     if (selectedFocusAreas.length === 0) {
-      setAiError("Bitte waehle mindestens einen Analysefokus aus.");
+      setAiError("Bitte wähle mindestens einen Analysefokus aus.");
       setActiveAiStep(1);
       return;
     }
@@ -830,7 +875,7 @@ function App() {
       setLastFollowUp(followUpQuestion ?? null);
     } catch (caughtError) {
       setRecommendation(null);
-      setAiError(caughtError instanceof Error ? caughtError.message : "KI-Auswertung konnte nicht geladen werden.");
+      setAiError(caughtError instanceof Error ? caughtError.message : "Auswertung konnte nicht geladen werden.");
     } finally {
       setIsGeneratingRecommendation(false);
     }
@@ -860,7 +905,12 @@ function App() {
     setIsExporting(format);
     setExportFeedback(null);
     try {
-      const report = await exportPortfolioReport(format, analysis, recommendation?.actionItems ?? analysis.recommendations);
+      const report = await exportPortfolioReport(
+        format,
+        analysis,
+        recommendation?.actionItems ?? analysis.recommendations,
+        portfolioName.trim() || "Portfolioanalyse",
+      );
       const url = URL.createObjectURL(report);
       const link = document.createElement("a");
       link.href = url;
@@ -883,13 +933,15 @@ function App() {
         <div className="header-copy">
           <p className="eyebrow">Portfolio Workspace</p>
           <h1>Portfolioanalyse</h1>
-          <p>Historische Kennzahlen, Risiken und gefuehrte Entscheidungen an einem Ort.</p>
+          <p>Historische Kennzahlen, Risiken und geführte Entscheidungen an einem Ort.</p>
         </div>
 
         <div className="header-actions" aria-label="Analyse Steuerung">
           <div className="workspace-switch" role="tablist" aria-label="Arbeitsbereich">
             <button
               type="button"
+              role="tab"
+              aria-selected={workspaceView === "analysis"}
               className={workspaceView === "analysis" ? "active" : ""}
               onClick={() => handleWorkspaceChange("analysis")}
             >
@@ -897,6 +949,8 @@ function App() {
             </button>
             <button
               type="button"
+              role="tab"
+              aria-selected={workspaceView === "ai"}
               className={workspaceView === "ai" ? "active" : ""}
               onClick={() => handleWorkspaceChange("ai")}
               disabled={!canOpenAiWorkspace}
@@ -905,22 +959,25 @@ function App() {
             </button>
           </div>
 
-          <div className="period-switch" role="group" aria-label="Zeitraum">
-            {periodOptions.map((option) => (
-              <button
-                key={option.value}
-                type="button"
-                className={periodYears === option.value ? "active" : ""}
-                onClick={() => handlePeriodChange(option.value)}
-              >
-                {option.label}
-              </button>
-            ))}
-          </div>
+          <div className="header-cluster">
+            <div className="period-switch" role="group" aria-label="Zeitraum">
+              {periodOptions.map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  aria-pressed={periodYears === option.value}
+                  className={periodYears === option.value ? "active" : ""}
+                  onClick={() => handlePeriodChange(option.value)}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
 
-          <div className={`status-pill ${isLoading ? "loading" : isLive ? "live" : "fallback"}`} aria-live="polite">
-            <span />
-            {isLoading ? "Daten werden geladen" : isLive ? "Live-Daten" : "Demo-Daten"}
+            <div className={`status-pill ${isLoading ? "loading" : !analysis ? "idle" : isLive ? "live" : "fallback"}`} aria-live="polite">
+              <span />
+              {isLoading ? "Daten werden geladen" : !analysis ? "Noch keine Analyse" : isLive ? "Live-Daten" : "Demo-Fallback"}
+            </div>
           </div>
 
           <div className="export-actions" aria-label="Bericht exportieren">
@@ -929,7 +986,7 @@ function App() {
               className="export-button"
               onClick={() => handleExport("csv")}
               disabled={!analysis || isExporting !== null}
-              title={analysis ? "CSV-Bericht herunterladen" : "Export wird nach der Analyse verfuegbar"}
+              title={analysis ? "CSV-Bericht herunterladen" : "Export wird nach der Analyse verfügbar"}
             >
               {isExporting === "csv" ? <RefreshCw className="spinning" size={14} /> : <FileSpreadsheet size={14} />}
               CSV
@@ -939,16 +996,16 @@ function App() {
               className="export-button"
               onClick={() => handleExport("pdf")}
               disabled={!analysis || isExporting !== null}
-              title={analysis ? "PDF-Bericht herunterladen" : "Export wird nach der Analyse verfuegbar"}
+              title={analysis ? "PDF-Bericht herunterladen" : "Export wird nach der Analyse verfügbar"}
             >
               {isExporting === "pdf" ? <RefreshCw className="spinning" size={14} /> : <FileText size={14} />}
               PDF
             </button>
           </div>
 
-          <button className="toolbar-button primary" type="button" onClick={handleAnalyze} disabled={isLoading}>
+          <button className="toolbar-button primary" type="button" onClick={handleAnalyze} disabled={isLoading || !isWeightSumValid}>
             {isLoading ? <RefreshCw className="spinning" size={16} /> : <Database size={16} />}
-            {isLoading ? "Analyse laeuft" : "Analyse starten"}
+            {isLoading ? "Analyse läuft" : "Analyse starten"}
           </button>
         </div>
       </header>
@@ -963,7 +1020,7 @@ function App() {
             </div>
             <button className="ghost-button reset-button" type="button" onClick={resetPortfolio} title="Standardportfolio wiederherstellen">
               <RotateCcw size={15} />
-              <span>Zuruecksetzen</span>
+              <span>Zurücksetzen</span>
             </button>
           </div>
 
@@ -1010,8 +1067,8 @@ function App() {
                   className="icon-action danger"
                   onClick={handleDeletePortfolio}
                   disabled={!activeSavedPortfolioId}
-                  aria-label="Ausgewaehltes Portfolio loeschen"
-                  title="Ausgewaehltes Portfolio loeschen"
+                  aria-label="Ausgewähltes Portfolio löschen"
+                  title="Ausgewähltes Portfolio löschen"
                 >
                   <Trash2 size={14} />
                 </button>
@@ -1084,18 +1141,18 @@ function App() {
                 className="toolbar-button add-position-toggle"
                 onClick={() => setIsAddMenuOpen((currentValue) => !currentValue)}
                 disabled={assets.length >= 10}
-                aria-label="Position hinzufuegen"
+                aria-label="Position hinzufügen"
                 aria-expanded={isAddMenuOpen}
                 aria-controls="add-position-menu"
-                title="Position hinzufuegen"
+                title="Position hinzufügen"
               >
                 <Plus size={15} />
-                <span>Hinzufuegen</span>
+                <span>Hinzufügen</span>
                 <ChevronDown size={14} className={`add-position-chevron ${isAddMenuOpen ? "open" : ""}`} />
               </button>
 
               {isAddMenuOpen ? (
-                <div className="add-position-menu" id="add-position-menu" role="menu" aria-label="Position hinzufuegen">
+                <div className="add-position-menu" id="add-position-menu" role="menu" aria-label="Position hinzufügen">
                   {addPositionOptions.map((option) => (
                     <button
                       key={option.id}
@@ -1122,7 +1179,7 @@ function App() {
                 </div>
               ) : null}
             </div>
-            <button className="sidebar-primary" type="button" onClick={handleAnalyze} disabled={isLoading}>
+            <button className="sidebar-primary primary-outline" type="button" onClick={handleAnalyze} disabled={isLoading || !isWeightSumValid}>
               <TrendingUp size={15} />
               Jetzt auswerten
             </button>
@@ -1135,6 +1192,16 @@ function App() {
         </aside>
 
         <main className="analysis-board">
+          {analysisIsStale ? (
+            <div className="notice warning" role="status">
+              Das Portfolio wurde geändert. Die vorherige Auswertung ist veraltet — starte eine neue Analyse.
+            </div>
+          ) : null}
+          {!analysis && !analysisIsStale ? (
+            <div className="notice pre-analysis-notice" role="status">
+              Noch keine Auswertung: Starte eine Analyse, um historische Kursdaten und Kennzahlen zu laden.
+            </div>
+          ) : null}
           {error ? <div className="notice error">{error}</div> : null}
           {llmCheckError ? <div className="notice error">{llmCheckError}</div> : null}
           {workspaceView === "ai" && aiError ? <div className="notice error">{aiError}</div> : null}
@@ -1142,6 +1209,17 @@ function App() {
 
           {isLoading ? (
             <AnalysisSkeleton />
+          ) : !analysis ? (
+            <section className="empty-analysis-state panel" aria-labelledby="empty-analysis-title">
+              <div className="empty-analysis-icon" aria-hidden="true"><Database size={24} /></div>
+              <span className="section-kicker">Bereit für die Analyse</span>
+              <h2 id="empty-analysis-title">Noch keine Auswertung vorhanden</h2>
+              <p>Trage Ticker und Gewichte ein und starte anschließend eine Analyse. Erst danach werden historische Kennzahlen und Vergleiche angezeigt.</p>
+              <button type="button" className="toolbar-button primary" onClick={handleAnalyze} disabled={!isWeightSumValid}>
+                <TrendingUp size={15} />
+                Analyse starten
+              </button>
+            </section>
           ) : workspaceView === "analysis" ? (
             <>
               <section className="kpi-row" aria-label="Portfolio Kennzahlen">
@@ -1149,12 +1227,12 @@ function App() {
                   icon={<TrendingUp size={18} />}
                   label="Rendite (p.a.)"
                   value={formatPercent(activeMetrics.expectedReturn)}
-                  helper={`Optimiert: ${formatPercent(activeOptimizedMetrics.expectedReturn)}`}
+                  helper={`Erwartungswert. Tatsächlich im Zeitraum: ${formatPercent(activeMetrics.annualizedReturnGeometric)} p.a.`}
                   tone="positive"
                 />
                 <MetricCard
                   icon={<Activity size={18} />}
-                  label="Volatilitaet (p.a.)"
+                  label="Volatilität (p.a.)"
                   value={formatPercent(activeMetrics.volatility)}
                   helper={`Optimiert: ${formatPercent(activeOptimizedMetrics.volatility)}`}
                 />
@@ -1162,14 +1240,14 @@ function App() {
                   icon={<ShieldCheck size={18} />}
                   label="Sharpe Ratio"
                   value={activeMetrics.sharpeRatio.toFixed(2)}
-                  helper={`Optimiert: ${activeOptimizedMetrics.sharpeRatio.toFixed(2)}`}
-                  tone="positive"
+                  helper="Rendite je Risikoeinheit – über 1 gilt als gut"
+                  tone={activeMetrics.sharpeRatio >= 1 ? "positive" : "neutral"}
                 />
                 <MetricCard
                   icon={<AlertTriangle size={18} />}
-                  label="Value at Risk (95%)"
+                  label={`Value at Risk (95 %, ${activeMetrics.valueAtRiskHorizonDays} Tag${activeMetrics.valueAtRiskHorizonDays === 1 ? "" : "e"})`}
                   value={`-${formatPercent(activeMetrics.valueAtRisk)}`}
-                  helper="Historisch auf Basis des Analysezeitraums"
+                  helper="Historisches Quantil der Renditen im gewählten Zeitraum."
                   tone="warning"
                 />
               </section>
@@ -1179,10 +1257,10 @@ function App() {
                   <BrainCircuit size={22} />
                 </div>
                 <div className="analysis-cta-copy">
-                  <h2>KI-Auswertung mit Anlegerprofil</h2>
+                  <h2>Auswertung mit Anlegerprofil</h2>
                   <p>
-                    Nach der Analyse kannst du in einen gefuehrten KI-Workspace wechseln und Fokus, Anlegerprofil und
-                    Verbesserungsziel festlegen.
+                    Nach der Analyse kannst du Fokus, Anlegerprofil und Verbesserungsziel festlegen. Falls kein
+                    Sprachmodell verfügbar ist, wird die regelbasierte Auswertung eindeutig gekennzeichnet.
                   </p>
                 </div>
                 <div className="analysis-cta-actions">
@@ -1191,18 +1269,18 @@ function App() {
                     className="toolbar-button"
                     onClick={() => handleLlmCheck()}
                     disabled={isLoadingLlmCheck}
-                    title="Welche lokalen Sprachmodelle kann dieser Rechner ausfuehren?"
+                    title="Welche lokalen Sprachmodelle kann dieser Rechner ausführen?"
                   >
                     {isLoadingLlmCheck ? <RefreshCw className="spinning" size={15} /> : <Cpu size={15} />}
-                    {isLoadingLlmCheck ? "Pruefe System" : "Lokale KI pruefen"}
+                    {isLoadingLlmCheck ? "Prüfe System" : "Lokale KI prüfen"}
                   </button>
                   <button
                     type="button"
-                    className="toolbar-button primary"
+                    className="toolbar-button primary-outline"
                     disabled={!canOpenAiWorkspace}
                     onClick={() => handleWorkspaceChange("ai")}
                   >
-                    {canOpenAiWorkspace ? "Zur KI-Auswertung wechseln" : "Erst Analyse durchfuehren"}
+                    {canOpenAiWorkspace ? "Zur Auswertung wechseln" : "Erst Analyse durchführen"}
                   </button>
                 </div>
               </article>
@@ -1213,16 +1291,27 @@ function App() {
                     <h2>Normalisierte Wertentwicklung</h2>
                     <p>
                       {hiddenChartAssets.length > 0
-                        ? "Portfolio plus die vier groessten Positionen im Vergleich."
-                        : "Portfolio plus alle ausgewaehlten Positionen im Vergleich."}
+                        ? "Portfolio plus die vier größten Positionen im Vergleich."
+                        : "Portfolio plus alle ausgewählten Positionen im Vergleich."}
                     </p>
                   </div>
                 </div>
                 <div className="legend-row">
                   <span className="legend-chip portfolio-line">Portfolio</span>
-                  {chartAssets.map((asset) => (
+                  {chartAssets.map((asset, index) => (
                     <span className="legend-chip" key={asset.id}>
-                      <span className="legend-dot" style={{ backgroundColor: asset.color }} />
+                      <svg className="legend-swatch" width="20" height="4" viewBox="0 0 20 4" aria-hidden="true">
+                        <line
+                          x1="1"
+                          y1="2"
+                          x2="19"
+                          y2="2"
+                          stroke={asset.color}
+                          strokeWidth="2.5"
+                          strokeLinecap="round"
+                          strokeDasharray={chartDashPatterns[index % chartDashPatterns.length] || undefined}
+                        />
+                      </svg>
                       {asset.ticker}
                     </span>
                   ))}
@@ -1250,7 +1339,11 @@ function App() {
                         tickFormatter={(value) => Number(value).toFixed(0)}
                         width={42}
                       />
-                      <Tooltip contentStyle={{ borderRadius: 10, borderColor: "#d8dee8" }} />
+                      <Tooltip
+                        contentStyle={{ borderRadius: 10, borderColor: "#d8dee8", fontSize: 12 }}
+                        labelStyle={{ fontWeight: 700, color: "#15253c" }}
+                        formatter={(value) => chartValueFormatter.format(Number(value))}
+                      />
                       <Line
                         dataKey="portfolio"
                         name="Portfolio"
@@ -1260,7 +1353,7 @@ function App() {
                         strokeWidth={3}
                         type="monotone"
                       />
-                      {chartAssets.map((asset) => (
+                      {chartAssets.map((asset, index) => (
                         <Line
                           dataKey={asset.ticker}
                           key={asset.id}
@@ -1269,6 +1362,7 @@ function App() {
                           dot={false}
                           isAnimationActive={false}
                           strokeWidth={2}
+                          strokeDasharray={chartDashPatterns[index % chartDashPatterns.length] || undefined}
                           type="monotone"
                         />
                       ))}
@@ -1282,7 +1376,7 @@ function App() {
                   <div className="panel-heading">
                     <div>
                       <h2>Korrelationsmatrix</h2>
-                      <p>Zeigt, welche Positionen sich historisch aehnlich bewegen.</p>
+                      <p>Zeigt, welche Positionen sich historisch ähnlich bewegen.</p>
                     </div>
                   </div>
                   <div className="heatmap-scroll">
@@ -1300,7 +1394,9 @@ function App() {
                     <div className="panel-heading">
                       <div>
                         <h2>Optimierte Alternative</h2>
-                        <p>Eine datenbasierte Vergleichsvariante fuer ein besseres Rendite-Risiko-Verhaeltnis.</p>
+                        <p>
+                          Historische Vergleichsvariante für den gewählten Zeitraum, maximal {formatPercent(analysis?.optimizationSettings.maxWeight ?? 0.35)} je Position; keine Prognose.
+                        </p>
                       </div>
                     </div>
 
@@ -1310,16 +1406,27 @@ function App() {
                         <strong>{formatPercent(activeOptimizedMetrics.expectedReturn)}</strong>
                       </div>
                       <div>
-                        <span>Volatilitaet</span>
+                        <span>Volatilität</span>
                         <strong>{formatPercent(activeOptimizedMetrics.volatility)}</strong>
                       </div>
                       <div>
                         <span>Sharpe</span>
                         <strong>{activeOptimizedMetrics.sharpeRatio.toFixed(2)}</strong>
                       </div>
+                      <div>
+                        <span>Diversifikation</span>
+                        <strong>{activeMetrics.diversificationScore.toFixed(0)} / 100</strong>
+                        <small>≈ {activeMetrics.effectiveHoldings.toFixed(1)} Positionen</small>
+                      </div>
                     </div>
 
                     <div className="weight-comparison-list">
+                      <div className="comparison-row comparison-row-head">
+                        <span>Position</span>
+                        <span>Aktuell</span>
+                        <span>Δ</span>
+                        <span>Ziel</span>
+                      </div>
                       {optimizationRows.map((row) => (
                         <div className="comparison-row" key={row.id}>
                           <strong>{row.ticker || "Offene Position"}</strong>
@@ -1337,8 +1444,8 @@ function App() {
                   <article className="panel findings-panel">
                     <div className="panel-heading">
                       <div>
-                        <h2>Auffaelligkeiten</h2>
-                        <p>Regelbasierte Hinweise, die spaeter in die KI-Auswertung einfliessen.</p>
+                        <h2>Auffälligkeiten</h2>
+                        <p>Regelbasierte Hinweise, die in die spätere Auswertung einfließen.</p>
                       </div>
                     </div>
 
@@ -1361,12 +1468,12 @@ function App() {
                   icon={<TrendingUp size={18} />}
                   label="Rendite (p.a.)"
                   value={formatPercent(activeMetrics.expectedReturn)}
-                  helper={`Optimiert: ${formatPercent(activeOptimizedMetrics.expectedReturn)}`}
+                  helper={`Erwartungswert. Tatsächlich im Zeitraum: ${formatPercent(activeMetrics.annualizedReturnGeometric)} p.a.`}
                   tone="positive"
                 />
                 <MetricCard
                   icon={<Activity size={18} />}
-                  label="Volatilitaet (p.a.)"
+                  label="Volatilität (p.a.)"
                   value={formatPercent(activeMetrics.volatility)}
                   helper={`Optimiert: ${formatPercent(activeOptimizedMetrics.volatility)}`}
                 />
@@ -1374,14 +1481,14 @@ function App() {
                   icon={<ShieldCheck size={18} />}
                   label="Sharpe Ratio"
                   value={activeMetrics.sharpeRatio.toFixed(2)}
-                  helper={`Optimiert: ${activeOptimizedMetrics.sharpeRatio.toFixed(2)}`}
-                  tone="positive"
+                  helper="Rendite je Risikoeinheit – über 1 gilt als gut"
+                  tone={activeMetrics.sharpeRatio >= 1 ? "positive" : "neutral"}
                 />
                 <MetricCard
                   icon={<AlertTriangle size={18} />}
-                  label="Value at Risk (95%)"
+                  label={`Value at Risk (95 %, ${activeMetrics.valueAtRiskHorizonDays} Tag${activeMetrics.valueAtRiskHorizonDays === 1 ? "" : "e"})`}
                   value={`-${formatPercent(activeMetrics.valueAtRisk)}`}
-                  helper={`Zeitraum: ${periodOptions.find((option) => option.value === periodYears)?.label ?? "5 Jahre"}`}
+                  helper="Historisches Quantil der Renditen im gewählten Zeitraum."
                   tone="warning"
                 />
               </div>
@@ -1389,10 +1496,10 @@ function App() {
               <article className="panel ai-workspace-panel">
                 <div className="panel-heading ai-workspace-heading">
                   <div>
-                    <h2>KI-Auswertung</h2>
+                    <h2>Auswertung mit Anlegerprofil</h2>
                     <p>
-                      Lege Analysefokus, Anlegerprofil und Verbesserungsziel fest. Danach erzeugt die KI eine
-                      nachvollziehbare Portfolio-Auswertung.
+                      Lege Analysefokus, Anlegerprofil und Verbesserungsziel fest. Danach erzeugt die Anwendung eine
+                      nachvollziehbare Portfolio-Auswertung und zeigt die verwendete Quelle sichtbar an.
                     </p>
                   </div>
                   <button type="button" className="ghost-button" onClick={() => handleWorkspaceChange("analysis")}>
@@ -1400,19 +1507,38 @@ function App() {
                   </button>
                 </div>
 
-                <div className="ai-stepper" role="list" aria-label="KI Schritte">
+                {chatResetNotice ? <div className="notice feedback" role="status">{chatResetNotice}</div> : null}
+                <GoalChatPanel
+                  messages={goalChatMessages}
+                  onMessagesChange={setGoalChatMessages}
+                  proposal={goalChatProposal}
+                  onProposalChange={setGoalChatProposal}
+                  portfolioPreview={{ tickers: assets.map((asset) => asset.ticker), weights: assets.map((asset) => asset.weight / 100) }}
+                  currentSelection={selectedProfile ? {
+                    focusAreas: selectedFocusAreas,
+                    timeHorizon: selectedProfile.timeHorizon,
+                    riskStyle: selectedProfile.riskStyle,
+                    goalPreset: selectedGoalPreset,
+                    goalNote,
+                    reasoning: "Aktuelle Wizard-Auswahl",
+                  } : undefined}
+                  onApply={applyGoalProposal}
+                />
+
+                <div className="ai-stepper" role="group" aria-label="KI Schritte">
                   {[
                     { id: 1 as AiStep, title: "Analysefokus" },
                     { id: 2 as AiStep, title: "Anlegerprofil" },
                     { id: 3 as AiStep, title: "Verbesserungsziel" },
-                    { id: 4 as AiStep, title: "KI-Auswertung" },
+                    { id: 4 as AiStep, title: "Auswertung" },
                   ].map((step) => {
                     const isActive = activeAiStep === step.id;
-                    const isDone = activeAiStep > step.id || (step.id === 4 && Boolean(recommendation));
+                    const isDone = activeAiStep > step.id || goalProposalApplied || (step.id === 4 && Boolean(recommendation));
                     return (
                       <button
                         key={step.id}
                         type="button"
+                        aria-current={isActive ? "step" : undefined}
                         className={`ai-step ${isActive ? "active" : ""} ${isDone ? "done" : ""}`}
                         onClick={() => setActiveAiStep(step.id)}
                       >
@@ -1427,15 +1553,15 @@ function App() {
                   <article className="ai-context-card">
                     <span>Analysefokus</span>
                     <strong>{selectedFocusAreas.map((area) => focusAreaLabel(area)).join(", ")}</strong>
-                    <p>Die KI priorisiert diese Themen in der finalen Auswertung.</p>
+                        <p>Diese Themen werden in der finalen Auswertung priorisiert.</p>
                   </article>
                   <article className="ai-context-card">
                     <span>Anlegerprofil</span>
-                    <strong>{selectedProfile ? profileLabel(selectedProfile) : "Noch nicht ausgewaehlt"}</strong>
+                    <strong>{selectedProfile ? profileLabel(selectedProfile) : "Noch nicht ausgewählt"}</strong>
                     <p>
                       {selectedProfile
                         ? profileDescription(selectedProfile)
-                        : "Waehle Zeithorizont und Risikotyp, damit die KI passend priorisiert."}
+                        : "Wähle Zeithorizont und Risikotyp, damit die KI passend priorisiert."}
                     </p>
                   </article>
                   <article className="ai-context-card">
@@ -1464,8 +1590,14 @@ function App() {
                               type="button"
                               className={`selection-card ${isSelected ? "selected" : ""}`}
                               onClick={() => toggleFocusArea(option.id)}
+                              aria-pressed={isSelected}
                             >
-                              <strong>{option.label}</strong>
+                              <span className="selection-card-head">
+                                <strong>{option.label}</strong>
+                                <span className="selection-check" aria-hidden="true">
+                                  <Check size={13} />
+                                </span>
+                              </span>
                               <p>{option.description}</p>
                             </button>
                           );
@@ -1478,7 +1610,7 @@ function App() {
                         <div className="panel-heading">
                           <div>
                             <h2>Branchengewichtung</h2>
-                            <p>So verteilt sich dein Portfolio aktuell ueber Branchen und Themenfelder.</p>
+                            <p>So verteilt sich dein Portfolio aktuell über Branchen und Themenfelder.</p>
                           </div>
                         </div>
                         <SectorAllocationBars items={activeSectorAllocation} />
@@ -1487,8 +1619,8 @@ function App() {
                       <article className="panel findings-panel">
                         <div className="panel-heading">
                           <div>
-                            <h2>Wichtige Auffaelligkeiten</h2>
-                            <p>Diese Hinweise bilden die Datenbasis fuer die spaetere KI-Interpretation.</p>
+                            <h2>Wichtige Auffälligkeiten</h2>
+                            <p>Diese Hinweise bilden die Datenbasis für die spätere KI-Interpretation.</p>
                           </div>
                         </div>
 
@@ -1510,23 +1642,30 @@ function App() {
                     <div className="panel ai-inner-panel">
                       <div className="panel-heading">
                         <div>
-                          <h2>2. Welches Anlegerprofil soll die KI beruecksichtigen?</h2>
-                          <p>Die Auswahl steuert, ob die KI eher auf Stabilitaet, Balance oder Wachstum priorisiert.</p>
+                          <h2>2. Welches Anlegerprofil soll die KI berücksichtigen?</h2>
+                          <p>Die Auswahl steuert, ob die KI eher auf Stabilität, Balance oder Wachstum priorisiert.</p>
                         </div>
                       </div>
 
                       <div className="profile-groups">
                         <section className="profile-group">
                           <h3>Zeithorizont</h3>
-                          <div className="selection-grid compact">
+                          <div className="selection-grid compact" role="radiogroup" aria-label="Zeithorizont">
                             {timeHorizonOptions.map((option) => (
                               <button
                                 key={option.id}
                                 type="button"
+                                role="radio"
+                                aria-checked={selectedTimeHorizon === option.id}
                                 className={`selection-card ${selectedTimeHorizon === option.id ? "selected" : ""}`}
                                 onClick={() => selectTimeHorizon(option.id)}
                               >
-                                <strong>{option.label}</strong>
+                                <span className="selection-card-head">
+                                  <strong>{option.label}</strong>
+                                  <span className="selection-check" aria-hidden="true">
+                                    <Check size={13} />
+                                  </span>
+                                </span>
                                 <p>{option.description}</p>
                               </button>
                             ))}
@@ -1535,15 +1674,22 @@ function App() {
 
                         <section className="profile-group">
                           <h3>Risikotyp</h3>
-                          <div className="selection-grid compact">
+                          <div className="selection-grid compact" role="radiogroup" aria-label="Risikotyp">
                             {riskStyleOptions.map((option) => (
                               <button
                                 key={option.id}
                                 type="button"
+                                role="radio"
+                                aria-checked={selectedRiskStyle === option.id}
                                 className={`selection-card ${selectedRiskStyle === option.id ? "selected" : ""}`}
                                 onClick={() => selectRiskStyle(option.id)}
                               >
-                                <strong>{option.label}</strong>
+                                <span className="selection-card-head">
+                                  <strong>{option.label}</strong>
+                                  <span className="selection-check" aria-hidden="true">
+                                    <Check size={13} />
+                                  </span>
+                                </span>
                                 <p>{option.description}</p>
                               </button>
                             ))}
@@ -1560,19 +1706,26 @@ function App() {
                       <div className="panel-heading">
                         <div>
                           <h2>3. Was ist dein Verbesserungsziel?</h2>
-                          <p>Die KI kombiniert jetzt dein Ziel mit den Kennzahlen, der Branchenstruktur und dem Anlegerprofil.</p>
+                          <p>Die Anwendung kombiniert jetzt dein Ziel mit den Kennzahlen, der Branchenstruktur und dem Anlegerprofil.</p>
                         </div>
                       </div>
 
-                      <div className="selection-grid">
+                      <div className="selection-grid" role="radiogroup" aria-label="Verbesserungsziel">
                         {goalPresetOptions.map((option) => (
                           <button
                             key={option.id}
                             type="button"
+                            role="radio"
+                            aria-checked={selectedGoalPreset === option.id}
                             className={`selection-card ${selectedGoalPreset === option.id ? "selected" : ""}`}
                             onClick={() => selectGoalPreset(option.id)}
                           >
-                            <strong>{option.label}</strong>
+                            <span className="selection-card-head">
+                              <strong>{option.label}</strong>
+                              <span className="selection-check" aria-hidden="true">
+                                <Check size={13} />
+                              </span>
+                            </span>
                             <p>{option.description}</p>
                           </button>
                         ))}
@@ -1596,10 +1749,10 @@ function App() {
                     <div className="panel ai-inner-panel">
                       <div className="panel-heading">
                         <div>
-                          <h2>4. KI-Auswertung erzeugen</h2>
+                          <h2>4. Auswertung erzeugen</h2>
                           <p>
-                            Die KI verbindet jetzt deine Auswahl mit der historischen Analyse, der Branchenstruktur und
-                            optionalen News-Hinweisen.
+                            Die Anwendung verbindet jetzt deine Auswahl mit der historischen Analyse, der
+                            Branchenstruktur und optionalen News-Hinweisen.
                           </p>
                         </div>
                         <button
@@ -1609,11 +1762,11 @@ function App() {
                           disabled={isGeneratingRecommendation}
                         >
                           {isGeneratingRecommendation ? <RefreshCw className="spinning" size={15} /> : <BrainCircuit size={15} />}
-                          {isGeneratingRecommendation ? "KI analysiert" : recommendation ? "Neu generieren" : "KI-Auswertung erstellen"}
+                          {isGeneratingRecommendation ? "Auswertung läuft" : recommendation ? "Neu generieren" : "Auswertung erstellen"}
                         </button>
                       </div>
 
-                      <div className="llm-preference-row" role="radiogroup" aria-label="KI-Provider waehlen">
+                      <div className="llm-preference-row" role="radiogroup" aria-label="KI-Provider wählen">
                         {llmPreferenceOptions.map((option) => (
                           <button
                             key={option.id}
@@ -1648,18 +1801,43 @@ function App() {
                       {isGeneratingRecommendation ? (
                         <div className="notice loading">
                           <RefreshCw className="spinning" size={14} />
-                          Die KI erstellt gerade die Auswertung inklusive Profilbezug, Branchenblick und Handlungsschritten.
+                          Die Auswertung wird inklusive Profilbezug, Branchenblick und Handlungsschritten erstellt.
                         </div>
                       ) : null}
                     </div>
 
                     {recommendation ? (
-                      <div className="recommendation-grid">
+                      <>
+                        <div
+                          className={`ai-source-banner ${recommendation.source === "rules" ? "rules" : "model"}`}
+                          role="status"
+                          aria-live="polite"
+                        >
+                          <div className="ai-source-banner-icon">
+                            <ShieldCheck size={18} />
+                          </div>
+                          <div>
+                            <strong>
+                              {recommendation.source === "rules" ? "Keine KI verwendet" : "KI-Antwort verwendet"}
+                            </strong>
+                            <p>
+                              {recommendation.source === "rules"
+                                ? `Diese Auswertung wurde automatisch aus deinen berechneten Kennzahlen, deinem Anlegerprofil und festen Regeln erzeugt. Es wurde kein Sprachmodell verwendet.${recommendation.fallbackReason ? ` Grund: ${formatFallbackReason(recommendation.fallbackReason)}.` : ""}`
+                                : `Die Textinterpretation wurde von ${recommendationProviderLabel(recommendation)} formuliert. Kennzahlen und Gewichtungen stammen weiterhin aus der Portfolioanalyse.`}
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="recommendation-grid">
                         <article className="panel recommendation-hero">
                           <div className="panel-heading">
                             <div>
                               <h2>Kurzfazit</h2>
-                              <p>Die KI fasst die aktuelle Portfolio-Situation auf Basis deiner Auswahl zusammen.</p>
+                              <p>
+                                {recommendation.source === "rules"
+                                  ? "Regelbasierte Zusammenfassung auf Basis deiner berechneten Kennzahlen und Auswahl."
+                                  : "KI-Zusammenfassung auf Basis deiner berechneten Kennzahlen und Auswahl."}
+                              </p>
                             </div>
                           </div>
                           <p>{recommendation.summary}</p>
@@ -1704,7 +1882,7 @@ function App() {
                           <div className="panel-heading">
                             <div>
                               <h2>Analyse-Highlights</h2>
-                              <p>Die wichtigsten Kennzahlen- und Risikoaussagen fuer deine Auswahl.</p>
+                              <p>Die wichtigsten Kennzahlen- und Risikoaussagen für deine Auswahl.</p>
                             </div>
                           </div>
                           <ul className="report-list">
@@ -1718,7 +1896,7 @@ function App() {
                           <div className="panel-heading">
                             <div>
                               <h2>Branchenblick</h2>
-                              <p>Einordnung der aktuellen Schwerpunkte und moeglicher Luecken.</p>
+                              <p>Einordnung der aktuellen Schwerpunkte und möglicher Lücken.</p>
                             </div>
                           </div>
                           <ul className="report-list">
@@ -1732,7 +1910,7 @@ function App() {
                           <div className="panel-heading">
                             <div>
                               <h2>Konkrete Handlungsschritte</h2>
-                              <p>Die KI leitet daraus nachvollziehbare naechste Schritte ab.</p>
+                              <p>Die Auswertung leitet daraus nachvollziehbare nächste Schritte ab.</p>
                             </div>
                           </div>
                           <ol className="report-list ordered">
@@ -1749,6 +1927,9 @@ function App() {
                               <p>Diese Anpassungen orientieren sich an deiner Zielsetzung und der Vergleichsvariante.</p>
                             </div>
                           </div>
+                          <p className="optimization-basis">
+                            <strong>Berechnungsbasis:</strong> {recommendation.optimizationBasis.description}
+                          </p>
                           <div className="weight-adjustment-list">
                             {recommendation.weightAdjustments.map((adjustment) => (
                               <article className="weight-adjustment-card" key={`${adjustment.ticker}-${adjustment.suggestedWeight}`}>
@@ -1770,7 +1951,7 @@ function App() {
                             <div className="panel-heading">
                               <div>
                                 <h2>Neue Titelideen</h2>
-                                <p>Beispielkandidaten fuer eine naechste Folgeanalyse.</p>
+                                <p>Beispielkandidaten für eine nächste Folgeanalyse.</p>
                               </div>
                             </div>
                             {recommendation.newIdeas.length > 0 ? (
@@ -1787,14 +1968,14 @@ function App() {
                                 ))}
                               </div>
                             ) : (
-                              <p className="empty-copy">Aktuell wurden keine zusaetzlichen Titelideen abgeleitet.</p>
+                              <p className="empty-copy">Aktuell wurden keine zusätzlichen Titelideen abgeleitet.</p>
                             )}
                           </article>
 
                           <article className="panel ai-result-panel">
                             <div className="panel-heading">
                               <div>
-                                <h2>Pruefkandidaten im Bestand</h2>
+                                <h2>Prüfkandidaten im Bestand</h2>
                                 <p>Positionen, die im Kontext deiner Zielsetzung besondere Aufmerksamkeit verdienen.</p>
                               </div>
                             </div>
@@ -1807,16 +1988,16 @@ function App() {
                                 ))}
                               </ul>
                             ) : (
-                              <p className="empty-copy">Keine besonderen Pruefkandidaten gefunden.</p>
+                              <p className="empty-copy">Keine besonderen Prüfkandidaten gefunden.</p>
                             )}
                           </article>
                         </div>
 
-                        <article className="panel ai-result-panel">
+                        {recommendation.newsAvailable ? <article className="panel ai-result-panel">
                           <div className="panel-heading">
                             <div>
                               <h2>Aktuelle Nachrichtenhinweise</h2>
-                              <p>Nur fuer aktuell gehaltene Titel und nur, wenn verfuegbare Newsdaten geladen werden konnten.</p>
+                              <p>Nur für aktuell gehaltene Titel und nur, wenn verfügbare Newsdaten geladen werden konnten.</p>
                             </div>
                           </div>
                           {recommendation.newsSignals.length > 0 ? (
@@ -1832,9 +2013,19 @@ function App() {
                               ))}
                             </div>
                           ) : (
-                            <p className="empty-copy">Keine aktuellen Nachrichtenhinweise verfuegbar.</p>
+                            <p className="empty-copy">Keine aktuellen Nachrichtenhinweise verfügbar.</p>
                           )}
-                        </article>
+                        </article> : null}
+
+                        {analysis ? (
+                          <AskPanel
+                            analysis={analysis}
+                            recommendation={recommendation}
+                            messages={askMessages}
+                            onMessagesChange={setAskMessages}
+                            llmPreference={llmPreference}
+                          />
+                        ) : null}
 
                         <footer className="ai-report-footer">
                           <p>{recommendation.disclaimer}</p>
@@ -1846,19 +2037,22 @@ function App() {
                                 ? `Ollama ${recommendation.model} (lokal)`
                                 : recommendation.source === "cloud"
                                   ? `Cloud-API ${recommendation.model}`
-                                  : "Regel-Fallback"}
+                                  : recommendation.fallbackReason
+                                    ? `Regelmodus: ${formatFallbackReason(recommendation.fallbackReason)} (versucht: ${recommendation.attemptedBackends.join(", ") || "kein Anbieter"})`
+                                    : "Regelmodus"}
                           </span>
                           <span>Zeitraum: {formatShortDateRange(startDate, endDate)}</span>
                           <span>Letzte Aktualisierung: {analysis ? formatDateTime(analysis.updatedAt) : "noch keine Live-Analyse"}</span>
                         </footer>
-                      </div>
+                        </div>
+                      </>
                     ) : null}
                   </div>
                 ) : null}
 
                 <div className="ai-step-actions">
                   <button type="button" className="ghost-button" onClick={goToPreviousAiStep} disabled={activeAiStep === 1}>
-                    Zurueck
+                    Zurück
                   </button>
                   {activeAiStep < 4 ? (
                     <button
@@ -1963,9 +2157,9 @@ function App() {
             <div className="panel-heading search-modal-header">
               <div>
                 <h2 id="security-search-title">Position suchen</h2>
-                <p>Suche nach Aktien und ETFs per Name oder Ticker und uebernimm den Treffer direkt ins Portfolio.</p>
+                <p>Suche nach Aktien und ETFs per Name oder Ticker und übernimm den Treffer direkt ins Portfolio.</p>
               </div>
-              <button type="button" className="row-remove modal-close" onClick={closeSearchModal} aria-label="Suche schliessen">
+              <button type="button" className="row-remove modal-close" onClick={closeSearchModal} aria-label="Suche schließen">
                 <X size={15} />
               </button>
             </div>
@@ -1998,13 +2192,13 @@ function App() {
             {isSearching ? (
               <div className="notice loading">
                 <RefreshCw className="spinning" size={14} />
-                Suche nach passenden Aktien und ETFs laeuft.
+                Suche nach passenden Aktien und ETFs läuft.
               </div>
             ) : null}
 
             {!isSearching && !searchError && searchQuery.trim().length >= MIN_SEARCH_QUERY_LENGTH ? (
               searchResults.length > 0 ? (
-                <div className="search-results" role="list">
+                <div className="search-results">
                   {searchResults.map((result) => (
                     <button
                       key={`${result.symbol}-${result.exchange}`}
@@ -2032,178 +2226,6 @@ function App() {
       ) : null}
     </div>
   );
-}
-
-function AnalysisSkeleton() {
-  return (
-    <section className="analysis-skeleton" aria-live="polite" aria-label="Analyse wird geladen">
-      <div className="skeleton-intro">
-        <RefreshCw className="spinning" size={17} />
-        <div>
-          <strong>Historische Daten werden ausgewertet</strong>
-          <span>Kurse, Kennzahlen und die Vergleichsgewichtung werden vorbereitet.</span>
-        </div>
-      </div>
-      <div className="skeleton-kpis" aria-hidden="true">
-        {Array.from({ length: 4 }, (_, index) => (
-          <div className="skeleton-block metric-skeleton" key={index}>
-            <span />
-            <strong />
-            <small />
-          </div>
-        ))}
-      </div>
-      <div className="skeleton-block chart-skeleton" aria-hidden="true">
-        <span className="skeleton-chart-title" />
-        <div className="skeleton-chart-lines" />
-      </div>
-      <div className="skeleton-detail-row" aria-hidden="true">
-        <div className="skeleton-block detail-skeleton" />
-        <div className="skeleton-block detail-skeleton" />
-      </div>
-    </section>
-  );
-}
-
-function MetricCard({ label, value, helper, icon, tone = "neutral" }: MetricCardProps) {
-  return (
-    <article className={`metric-card ${tone}`}>
-      <div className="metric-label-row">
-        <span>{label}</span>
-        <div className="metric-icon">{icon}</div>
-      </div>
-      <strong>{value}</strong>
-      <p>{helper}</p>
-    </article>
-  );
-}
-
-function CorrelationHeatmap({ assets, values }: { assets: DisplayAsset[]; values: number[][] }) {
-  return (
-    <div className="heatmap" role="table" aria-label="Korrelationsmatrix">
-      <div className="heatmap-row header-row" style={{ gridTemplateColumns: `60px repeat(${assets.length}, minmax(52px, 1fr))` }}>
-        <span />
-        {assets.map((asset, index) => (
-          <strong key={asset.id}>{asset.ticker || `P${index + 1}`}</strong>
-        ))}
-      </div>
-
-      {assets.map((asset, rowIndex) => (
-        <div
-          className="heatmap-row"
-          key={asset.id}
-          style={{ gridTemplateColumns: `60px repeat(${assets.length}, minmax(52px, 1fr))` }}
-        >
-          <strong>{asset.ticker || `P${rowIndex + 1}`}</strong>
-          {assets.map((columnAsset, columnIndex) => {
-            const value = values[rowIndex]?.[columnIndex] ?? 0;
-            return (
-              <span
-                className="heatmap-cell"
-                key={`${asset.id}-${columnAsset.id}`}
-                style={{ backgroundColor: getCorrelationColor(value) }}
-              >
-                {value.toFixed(2)}
-              </span>
-            );
-          })}
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function SectorAllocationBars({ items }: { items: ApiSectorAllocation[] }) {
-  return (
-    <div className="sector-list">
-      {items.map((item) => (
-        <article className="sector-row" key={item.sector}>
-          <div className="sector-row-head">
-            <strong>{item.sector}</strong>
-            <span>{percentFormatter.format(item.weight)}</span>
-          </div>
-          <div className="sector-bar-track" aria-hidden="true">
-            <div className="sector-bar-fill" style={{ width: `${Math.max(item.weight * 100, 6)}%` }} />
-          </div>
-          <small>{item.tickers.join(", ")}</small>
-        </article>
-      ))}
-    </div>
-  );
-}
-
-function buildDemoRiskFindings(
-  assets: AssetInput[],
-  weights: number[],
-  metrics: { volatility: number; diversificationScore: number; sharpeRatio: number },
-  correlationValues: number[][],
-): ApiRiskFinding[] {
-  const findings: ApiRiskFinding[] = [];
-  const dominantIndex = weights.reduce((maxIndex, weight, index) => (weight > weights[maxIndex] ? index : maxIndex), 0);
-  const dominantLabel = assets[dominantIndex].ticker || `Position ${dominantIndex + 1}`;
-  if ((weights[dominantIndex] ?? 0) >= 0.3) {
-    findings.push({
-      type: "concentration",
-      severity: weights[dominantIndex] >= 0.45 ? "high" : "medium",
-      message: `${dominantLabel} ist mit ${percentFormatter.format(weights[dominantIndex])} die groesste Einzelposition und praegt das Portfolio besonders stark.`,
-    });
-  }
-
-  const strongestPair = findStrongestCorrelationPair(assets, correlationValues);
-  if (strongestPair && strongestPair.value >= 0.75) {
-    findings.push({
-      type: "correlation",
-      severity: "medium",
-      message: `${strongestPair.left} und ${strongestPair.right} bewegen sich in der Demo historisch recht aehnlich. Das kann die Diversifikation begrenzen.`,
-    });
-  }
-
-  if (metrics.diversificationScore < 60) {
-    findings.push({
-      type: "diversification",
-      severity: "medium",
-      message: `Der Diversifikationswert liegt bei ${metrics.diversificationScore.toFixed(1)} von 100. Eine breitere Gewichtung wirkt deshalb sinnvoll.`,
-    });
-  }
-
-  if (metrics.volatility >= 0.24) {
-    findings.push({
-      type: "volatility",
-      severity: metrics.volatility >= 0.32 ? "high" : "medium",
-      message: `Die Demo-Volatilitaet von ${formatPercent(metrics.volatility)} zeigt, dass das Portfolio spuerbar schwanken kann.`,
-    });
-  }
-
-  if (metrics.sharpeRatio < 0.6) {
-    findings.push({
-      type: "risk_return",
-      severity: "low",
-      message: "Das Rendite-Risiko-Verhaeltnis ist in der Demo noch ausbaufaehig. Genau hier setzt die optimierte Alternative an.",
-    });
-  }
-
-  return findings.slice(0, 4);
-}
-
-function buildFallbackSectorAllocation(assets: DisplayAsset[], weights: number[]): ApiSectorAllocation[] {
-  const grouped = new Map<string, { weight: number; tickers: string[] }>();
-  assets.forEach((asset, index) => {
-    const sector = asset.sector || "Unbekannt";
-    const current = grouped.get(sector) ?? { weight: 0, tickers: [] };
-    current.weight += weights[index] ?? 0;
-    if (asset.ticker) {
-      current.tickers.push(asset.ticker);
-    }
-    grouped.set(sector, current);
-  });
-
-  return Array.from(grouped.entries())
-    .map(([sector, value]) => ({
-      sector,
-      weight: Number(value.weight.toFixed(6)),
-      tickers: value.tickers,
-    }))
-    .sort((left, right) => right.weight - left.weight);
 }
 
 function inferFallbackSector(ticker: string, name: string) {
@@ -2240,40 +2262,15 @@ function inferFallbackInstrumentType(ticker: string, name: string, index: number
   return "EQUITY";
 }
 
-function getCorrelationColor(value: number) {
-  if (value < 0) {
-    return `rgba(207, 72, 54, ${0.18 + Math.abs(value) * 0.42})`;
-  }
-
-  return `rgba(11, 86, 146, ${0.16 + value * 0.56})`;
-}
-
 function getFindingTitle(finding: ApiRiskFinding) {
   const titles: Record<ApiRiskFinding["type"], string> = {
     concentration: "Konzentrationsrisiko",
     correlation: "Hohe Korrelation",
     diversification: "Diversifikation",
-    volatility: "Volatilitaet",
+    volatility: "Volatilität",
     risk_return: "Rendite-Risiko-Profil",
   };
   return titles[finding.type];
-}
-
-function findStrongestCorrelationPair(assets: AssetInput[], values: number[][]) {
-  let strongest: { left: string; right: string; value: number } | null = null;
-  for (let rowIndex = 0; rowIndex < assets.length; rowIndex += 1) {
-    for (let columnIndex = rowIndex + 1; columnIndex < assets.length; columnIndex += 1) {
-      const value = values[rowIndex]?.[columnIndex] ?? 0;
-      if (!strongest || value > strongest.value) {
-        strongest = {
-          left: assets[rowIndex].ticker || `Position ${rowIndex + 1}`,
-          right: assets[columnIndex].ticker || `Position ${columnIndex + 1}`,
-          value,
-        };
-      }
-    }
-  }
-  return strongest;
 }
 
 function focusAreaLabel(area: FocusArea) {
@@ -2290,12 +2287,12 @@ function profileLabel(profile: InvestorProfile) {
 
 function profileDescription(profile: InvestorProfile) {
   if (profile.riskStyle === "defensive") {
-    return "Die KI priorisiert breite Diversifikation, geringere Konzentration und robustere Branchenverteilung.";
+    return "Die Zielpriorisierung berücksichtigt breite Diversifikation, geringere Konzentration und robustere Branchenverteilung.";
   }
   if (profile.riskStyle === "aggressive") {
-    return "Die KI laesst Wachstumsschwerpunkte eher zu, bewertet Konzentrationsrisiken aber weiterhin kritisch.";
+    return "Die Zielpriorisierung lässt Wachstumsschwerpunkte eher zu und bewertet Konzentrationsrisiken weiterhin kritisch.";
   }
-  return "Die KI sucht eine nachvollziehbare Balance zwischen Stabilitaet, Branchenbreite und Renditechancen.";
+  return "Die Zielpriorisierung sucht eine nachvollziehbare Balance zwischen Stabilität, Branchenbreite und Renditechancen.";
 }
 
 function timeHorizonLabel(value: TimeHorizon) {
@@ -2324,6 +2321,28 @@ function sentimentLabel(value: RecommendationResult["newsSignals"][number]["sent
     mixed: "gemischt",
   } as const;
   return labels[value];
+}
+
+function formatFallbackReason(reason: string) {
+  return {
+    no_backend_reachable: "kein KI-Anbieter erreichbar",
+    timeout: "Zeitüberschreitung bei der KI-Anfrage",
+    invalid_response: "keine verwertbare KI-Antwort",
+    validation_failed: "KI-Antwort hat die Sicherheitsprüfung nicht bestanden",
+  }[reason] ?? reason;
+}
+
+function recommendationProviderLabel(recommendation: RecommendationResult) {
+  if (recommendation.source === "lmstudio") {
+    return `LM Studio${recommendation.model ? ` (${recommendation.model})` : ""} lokal`;
+  }
+  if (recommendation.source === "ollama") {
+    return `Ollama${recommendation.model ? ` (${recommendation.model})` : ""} lokal`;
+  }
+  if (recommendation.source === "cloud") {
+    return `der Cloud-API${recommendation.model ? ` (${recommendation.model})` : ""}`;
+  }
+  return "dem Regelmodus";
 }
 
 function buildPeriodRange(periodYears: PeriodPreset) {

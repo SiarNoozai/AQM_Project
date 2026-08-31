@@ -10,6 +10,10 @@ ALPHA_VANTAGE_API_KEY = os.getenv("ALPHA_VANTAGE_API_KEY", "").strip()
 ALPHA_VANTAGE_URL = "https://www.alphavantage.co/query"
 
 
+def is_news_configured() -> bool:
+    return bool(os.getenv("ALPHA_VANTAGE_API_KEY", ALPHA_VANTAGE_API_KEY).strip())
+
+
 @dataclass(frozen=True)
 class AssetProfile:
     name: str
@@ -92,7 +96,8 @@ def _fetch_asset_profile(ticker: str, live: bool = False) -> AssetProfile:
 
 
 async def fetch_news_signals(tickers: list[str], max_results: int = 4) -> list[dict[str, str]]:
-    if not ALPHA_VANTAGE_API_KEY:
+    api_key = os.getenv("ALPHA_VANTAGE_API_KEY", ALPHA_VANTAGE_API_KEY).strip()
+    if not api_key:
         return []
 
     collected: list[dict[str, str]] = []
@@ -107,7 +112,7 @@ async def fetch_news_signals(tickers: list[str], max_results: int = 4) -> list[d
                         "function": "NEWS_SENTIMENT",
                         "tickers": ticker,
                         "limit": 3,
-                        "apikey": ALPHA_VANTAGE_API_KEY,
+                        "apikey": api_key,
                     },
                 )
                 response.raise_for_status()

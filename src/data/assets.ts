@@ -18,8 +18,8 @@ const assetPalette = [
   "#0f766e",
   "#2563eb",
   "#d97706",
-  "#0f4c81",
   "#7c3aed",
+  "#0f4c81",
   "#15803d",
   "#dc2626",
   "#0891b2",
@@ -144,36 +144,9 @@ export function syncAssetMetadata(asset: AssetInput, index: number, options: { p
   return {
     ...asset,
     ticker: normalizedTicker,
-    name: seed?.name ?? (options.preserveName && preservedName ? preservedName : normalizedTicker || "Neue Position"),
+    name: options.preserveName && preservedName ? preservedName : ((seed?.name ?? normalizedTicker) || "Neue Position"),
     expectedReturn: seed?.expectedReturn ?? asset.expectedReturn,
     volatility: seed?.volatility ?? asset.volatility,
     color: asset.color || assetPalette[index % assetPalette.length],
   };
-}
-
-export function getNextSuggestedAsset(existing: AssetInput[]): AssetInput {
-  return createAssetInput(
-    {
-      ticker: "",
-      name: "Neue Position",
-      weight: 0,
-    },
-    existing.length,
-  );
-}
-
-export function buildFallbackCorrelationMatrix(assets: AssetInput[]): number[][] {
-  return assets.map((_, rowIndex) =>
-    assets.map((__, columnIndex) => {
-      if (rowIndex === columnIndex) {
-        return 1;
-      }
-      const presetValue = baseCorrelationMatrix[rowIndex]?.[columnIndex];
-      if (presetValue !== undefined) {
-        return presetValue;
-      }
-      const generated = 0.18 + Math.abs(Math.sin((rowIndex + 1) * (columnIndex + 2) * 0.73)) * 0.58;
-      return Number(generated.toFixed(2));
-    }),
-  );
 }

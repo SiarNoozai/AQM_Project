@@ -171,6 +171,10 @@ textarea:focus-visible {
   background: #d48a14;
 }
 
+.status-pill.idle span {
+  background: var(--border-strong);
+}
+
 .workspace-switch {
   display: inline-flex;
   align-items: center;
@@ -242,7 +246,6 @@ textarea:focus-visible {
 .search-trigger:hover:not(:disabled) {
   border-color: #9fb4c8;
   background: var(--surface-muted);
-  transform: translateY(-1px);
 }
 
 .toolbar-button.primary:hover:not(:disabled),
@@ -631,7 +634,7 @@ textarea:focus-visible {
 .search-result:hover:not(:disabled) {
   border-color: #9fb4c8;
   background: var(--surface-muted);
-  transform: translateY(-1px);
+  box-shadow: var(--shadow);
 }
 
 .search-result-copy {
@@ -1055,7 +1058,7 @@ textarea:focus-visible {
 
 .profile-groups {
   display: grid;
-  gap: 18px;
+  gap: 16px;
 }
 
 .profile-group {
@@ -1153,6 +1156,57 @@ textarea:focus-visible {
 .recommendation-grid {
   display: grid;
   gap: 16px;
+}
+
+.ai-source-banner {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  padding: 14px 16px;
+}
+
+.ai-source-banner.rules {
+  border-color: #e6c978;
+  background: #fff9e8;
+}
+
+.ai-source-banner.model {
+  border-color: #a9d9ce;
+  background: var(--accent-soft);
+}
+
+.ai-source-banner-icon {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border-radius: 10px;
+  color: var(--primary);
+  background: var(--surface);
+}
+
+.ai-source-banner.rules .ai-source-banner-icon {
+  color: #7b5a14;
+}
+
+.ai-source-banner.model .ai-source-banner-icon {
+  color: var(--accent);
+}
+
+.ai-source-banner strong {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 13px;
+}
+
+.ai-source-banner p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .recommendation-hero {
@@ -1602,9 +1656,9 @@ body {
 }
 
 .app-header {
-  min-height: 78px;
+  min-height: 74px;
   gap: 16px;
-  padding: 12px 20px;
+  padding: 10px 20px;
   background: oklch(0.995 0.002 225 / 0.94);
 }
 
@@ -1709,7 +1763,6 @@ body {
   border-color: var(--primary);
   color: var(--primary);
   background: var(--surface-muted);
-  transform: translateY(-1px);
 }
 
 .toolbar-button,
@@ -2036,7 +2089,7 @@ body {
 }
 
 .legend-row {
-  gap: 9px;
+  gap: 8px;
 }
 
 .analysis-detail-grid {
@@ -2239,7 +2292,6 @@ body {
 .quick-followup-actions button:hover:not(:disabled) {
   border-color: var(--primary);
   background: oklch(0.95 0.02 225);
-  transform: translateY(-1px);
 }
 
 .quick-followup-actions button:active:not(:disabled) {
@@ -2256,7 +2308,7 @@ body {
 
 @media (min-width: 1280px) {
   .dashboard-screen {
-    grid-template-rows: 78px minmax(0, 1fr);
+    grid-template-rows: 74px minmax(0, 1fr);
   }
 
   .dashboard-layout {
@@ -2417,7 +2469,7 @@ body {
 
 /* Allocation builder: a compact working surface, not a stack of forms. */
 .portfolio-sidebar {
-  gap: 12px;
+  gap: 10px;
   padding: 15px;
   align-content: start;
 }
@@ -3025,4 +3077,519 @@ body {
   font-size: 11px;
   color: var(--muted);
   line-height: 1.35;
+}
+
+/* --- Composition pass: header clustering, hierarchy, totals row --- */
+
+/* Group period presets + data-mode chip into one cluster, set off from the
+   view toggle with a subtle divider instead of extra gap. */
+.header-cluster {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding-left: 10px;
+  border-left: 1px solid var(--border);
+}
+
+/* Exactly one filled primary per view (header "Analyse starten"). Secondary
+   accent actions read as primary-outline so they do not compete. */
+.toolbar-button.primary-outline,
+.sidebar-primary.primary-outline {
+  border-color: var(--primary);
+  color: var(--primary);
+  background: transparent;
+  box-shadow: none;
+}
+
+.toolbar-button.primary-outline:hover:not(:disabled),
+.sidebar-primary.primary-outline:hover:not(:disabled) {
+  border-color: var(--primary-hover);
+  color: var(--primary-hover);
+  background: var(--surface-muted);
+  box-shadow: none;
+}
+
+/* Weight column: right-aligned tabular numerals for a clean money column. */
+.holding-weight input {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* "Gewichtungssumme" reads as a totals row: top rule + emphasised figure. */
+.weight-sum {
+  border-top: 1px solid var(--border-strong);
+  padding-top: 8px;
+  font-weight: 780;
+}
+
+.notice.warning {
+  border-color: #ead39a;
+  color: #7b5a14;
+  background: #fff9e8;
+}
+
+.notice.pre-analysis-notice {
+  color: var(--muted);
+  background: var(--surface);
+}
+
+.comparison-metrics small {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.optimization-basis {
+  margin: -2px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+@media (min-width: 1280px) {
+  .portfolio-sidebar {
+    grid-template-rows: auto auto auto minmax(0, 1fr) auto auto;
+    overflow: hidden;
+  }
+
+  .portfolio-sidebar .builder-grid {
+    min-height: 0;
+    overflow-y: auto;
+    padding-right: 3px;
+  }
+
+  .portfolio-sidebar .sidebar-actions,
+  .portfolio-sidebar .weight-sum {
+    position: relative;
+    z-index: 2;
+    background: var(--surface);
+  }
+}
+
+.weight-comparison-list {
+  overflow-x: auto;
+}
+
+.comparison-row {
+  min-width: 380px;
+}
+
+.chat-panel {
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 14px;
+  background: var(--surface-muted);
+}
+
+.chat-panel-heading,
+.proposal-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.chat-panel-heading h2 {
+  margin: 2px 0 0;
+  font-size: 15px;
+}
+
+.chat-panel-heading p {
+  max-width: 720px;
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.chat-count {
+  flex: 0 0 auto;
+  color: var(--subtle);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+}
+
+.chat-message-list {
+  display: grid;
+  gap: 8px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding-right: 3px;
+}
+
+.chat-message {
+  max-width: 86%;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  padding: 9px 11px;
+  background: var(--surface);
+}
+
+.chat-message.user {
+  justify-self: end;
+  border-color: #c7dced;
+  background: #f1f7fc;
+}
+
+.chat-message span {
+  color: var(--subtle);
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.chat-message p {
+  margin: 4px 0 0;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.chat-message small {
+  display: block;
+  margin-top: 7px;
+  color: var(--subtle);
+  font-size: 10px;
+}
+
+.chat-empty,
+.chat-loading,
+.chat-disclaimer {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.chat-mode-note {
+  border-left: 3px solid #d49b39;
+  padding: 7px 9px;
+  color: #725315;
+  background: #fff8e8;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.chat-compose {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 7px 9px;
+  align-items: end;
+}
+
+.chat-compose label {
+  grid-column: 1 / -1;
+  color: var(--subtle);
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.chat-compose textarea {
+  min-height: 52px;
+  resize: vertical;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 9px 10px;
+  color: var(--text);
+  background: var(--surface);
+  font: inherit;
+  font-size: 12px;
+}
+
+.proposal-card {
+  display: grid;
+  gap: 9px;
+  border: 1px solid #b8ddd6;
+  border-radius: 12px;
+  padding: 11px;
+  background: #f0faf7;
+}
+
+.proposal-heading strong {
+  font-size: 12px;
+}
+
+.proposal-heading span {
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.proposal-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.proposal-chips span,
+.ask-example-list button {
+  border: 1px solid #c7e1dc;
+  border-radius: 999px;
+  padding: 5px 8px;
+  color: #17685c;
+  background: #fff;
+  font-size: 10px;
+  font-weight: 750;
+}
+
+.proposal-card p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.proposal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.ask-example-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.ask-example-list button {
+  border-radius: 9px;
+  color: var(--primary);
+  border-color: var(--border);
+  text-align: left;
+  cursor: pointer;
+}
+
+.ask-example-list button:hover:not(:disabled) {
+  border-color: var(--primary);
+  background: #f1f7fc;
+}
+
+@media (max-width: 640px) {
+  .chat-compose {
+    grid-template-columns: 1fr;
+  }
+
+  .chat-compose .toolbar-button {
+    width: 100%;
+  }
+}
+
+/* Low-contrast chart gridlines so the data lines carry the emphasis. */
+.performance-chart .recharts-cartesian-grid line {
+  opacity: 0.5;
+}
+
+@media (max-width: 760px) {
+  .header-cluster {
+    display: flex;
+    width: 100%;
+    padding-left: 0;
+    border-left: 0;
+  }
+}
+
+/* --- UX polish pass: selection cards, comparison table, chart legend, modals --- */
+
+/* Selection cards: content anchored top, clear hover, explicit check affordance. */
+.selection-card {
+  align-content: start;
+  min-height: 0;
+  transition:
+    transform 160ms ease,
+    border-color 160ms ease,
+    background-color 160ms ease,
+    box-shadow 160ms ease;
+}
+
+.selection-card:hover:not(:disabled) {
+  border-color: #9fb4c8;
+  background: #f2f7fb;
+}
+
+.selection-card:active:not(:disabled) {
+  transform: scale(0.99);
+}
+
+.selection-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.selection-check {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  border: 1.5px solid var(--border-strong);
+  border-radius: 999px;
+  color: transparent;
+  background: var(--surface);
+  transition:
+    background-color 160ms ease,
+    border-color 160ms ease,
+    color 160ms ease;
+}
+
+.selection-card.selected .selection-check {
+  border-color: var(--primary);
+  color: #fff;
+  background: var(--primary);
+}
+
+/* Chart legend swatches mirror each line's dash pattern. */
+.legend-swatch {
+  flex: 0 0 auto;
+}
+
+/* Optimierte Alternative: labelled, right-aligned numeric columns. */
+.comparison-row span {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.comparison-row-head {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 5px;
+  color: var(--subtle);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.comparison-row-head span:first-child {
+  text-align: left;
+}
+
+/* Lock background scroll while a modal is open. */
+body:has(.search-modal-backdrop) {
+  overflow: hidden;
+}
+
+@media (max-width: 760px) {
+  /* Keep the four comparison columns aligned on small screens too. */
+  .comparison-row {
+    grid-template-columns: minmax(0, 1fr) auto auto auto;
+  }
+
+  .comparison-row span:last-child {
+    grid-column: auto;
+    justify-self: auto;
+  }
+
+  /* Comfortable touch targets on small screens. */
+  .workspace-switch button,
+  .period-switch button,
+  .status-pill,
+  .export-button,
+  .compact-action {
+    min-height: 40px;
+  }
+
+  .holding-instrument input,
+  .holding-weight input,
+  .holding-row .search-trigger {
+    height: 36px;
+    min-height: 36px;
+  }
+
+  .selection-card {
+    padding: 14px;
+  }
+}
+
+.empty-analysis-state {
+  min-height: 420px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 48px 28px;
+  text-align: center;
+}
+
+.empty-analysis-state h2 {
+  margin: 0;
+  color: var(--text);
+}
+
+.empty-analysis-state p {
+  max-width: 560px;
+  margin: 0 0 10px;
+  color: var(--muted);
+  line-height: 1.65;
+}
+
+.empty-analysis-icon {
+  display: grid;
+  width: 52px;
+  height: 52px;
+  place-items: center;
+  border: 1px solid rgba(15, 118, 110, 0.2);
+  border-radius: 16px;
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+/* Final visual pass: keep the instrument focused on wide presentation screens. */
+@media (min-width: 1280px) {
+  .app-header {
+    padding-inline: max(20px, calc((100vw - 2080px) / 2 + 20px));
+  }
+
+  .dashboard-layout {
+    width: 100%;
+    max-width: 2080px;
+    margin-inline: auto;
+    grid-template-columns: 340px minmax(0, 1fr);
+  }
+
+  .analysis-board {
+    align-content: start;
+  }
+
+  .analysis-board > .pre-analysis-notice,
+  .analysis-board > .notice.warning,
+  .analysis-board > .notice.error,
+  .analysis-board > .notice.feedback {
+    align-self: start;
+    justify-self: stretch;
+  }
+
+  .empty-analysis-state {
+    min-height: 390px;
+    border-style: dashed;
+    background: var(--surface-muted);
+  }
+}
+
+.empty-analysis-state h2 {
+  font-size: clamp(20px, 1.7vw, 28px);
+  letter-spacing: -0.035em;
+}
+
+.empty-analysis-state p {
+  max-width: 48ch;
+}
+
+.empty-analysis-state .toolbar-button {
+  min-height: 40px;
+  padding-inline: 16px;
+}
+
+/* Keep holdings content-sized inside the flexible desktop sidebar track. */
+@media (min-width: 1280px) {
+  .portfolio-sidebar .builder-grid {
+    align-content: start;
+  }
 }

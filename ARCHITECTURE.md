@@ -1,72 +1,60 @@
 # Architektur
 
-## Systemueberblick
-
-Das Projekt besteht aus drei Schichten:
-
-1. Praesentationsschicht: React/Vite Dashboard in `src/`
-2. Quant- und Daten-Schicht: FastAPI Backend in `backend/`
-3. KI-Interpretationsschicht: Ollama HTTP API mit regelbasiertem Fallback
+## Systemüberblick
 
 ```mermaid
 flowchart LR
-  A["Nutzer: Ticker, Gewichtungen, Zeitraum"] --> B["React Dashboard"]
-  B --> C["FastAPI /api/analyze"]
-  C --> D["yfinance / Yahoo Finance"]
-  C --> E["Pandas, NumPy, SciPy"]
-  E --> F["Kennzahlen, Optimierung, Strategien, Risikobeitraege"]
-  F --> B
-  B --> G["/api/recommend und /api/ask"]
-  G --> H["Ollama optional"]
-  G --> I["Regelbasierter Fallback"]
-  H --> B
-  I --> B
+  U["Nutzer: Ticker, Gewichtungen, Zeitraum"] --> F["React/Vite Dashboard"]
+  F --> A["FastAPI /api/analyze"]
+  A --> Y["yfinance / Yahoo Finance"]
+  A --> Q["backend/analysis.py"]
+  Q --> R["Kennzahlen, Risiken, Optimierung"]
+  R --> F
+  F --> I["/api/recommend"]
+  F --> G["/api/goal-chat und /api/ask"]
+  I --> L["LM Studio / Ollama / Cloud optional"]
+  G --> L
+  I --> B["Regelbasierter Fallback"]
+  G --> B
+  F --> X["/api/export/csv und /api/export/pdf"]
 ```
 
 ## Frontend
 
-Das Frontend nutzt React, TypeScript, Vite, Recharts und lucide-react. Die Hauptdatei ist `src/App.tsx`; API-Aufrufe sind in `src/lib/api.ts` gekapselt. Gespeicherte Portfolios werden ueber `src/lib/portfolioStorage.ts` im Browser-LocalStorage abgelegt.
+Das Frontend liegt in `src/` und nutzt React, TypeScript, Vite, Recharts und lucide-react. `src/App.tsx` verwaltet Portfolio- und Workspace-Zustand. Wiederverwendbare Darstellungskomponenten liegen in `src/components/`; API-Verträge und HTTP-Aufrufe liegen in `src/lib/api.ts`, `src/lib/chatClient.ts` und `src/lib/exportClient.ts`. Portfolios werden über `src/lib/portfolioStorage.ts` im Browser-LocalStorage gespeichert.
 
-## Backend
+Vor der ersten Analyse zeigt die Oberfläche keine berechneten Kennzahlen. Nach einer Analyse werden Live-Ergebnisse oder ein vom Backend gekennzeichneter Demo-Fallback dargestellt. Änderungen an Ticker, Gewicht oder Zeitraum markieren ein bestehendes Ergebnis als veraltet und löschen nur das nicht mehr gültige Ergebnis; Wizard-Auswahl und Chat bleiben erhalten.
 
-Das Backend nutzt FastAPI. Relevante Routen:
+## Backend-Module
+
+- `backend/main.py`: FastAPI-App, CORS, Validierung über Response-Modelle, Chat-Rate-Limit und Routen.
+- `backend/models.py`: Request-/Response-Verträge für Analyse, Empfehlungen, Chat und Export.
+- `backend/analysis.py`: Kursabruf, Renditen, Risiko, Diversifikation, Risikobefunde und Optimierung.
+- `backend/recommendations.py`: profilbezogene Gewichtungsvorschläge, Provider-Kette, strukturelle Validierung und Regelmodus.
+- `backend/conversation.py`: Zielgespräch, Digest-Aufbau, Rückfragen, Regelantworten und LLM-Guardrails.
+- `backend/market_intelligence.py`: Asset-Metadaten, optionale Alpha-Vantage-News und lokale Fallback-Kataloge.
+- `backend/exports.py`: CSV-Export sowie PDF mit Chart, Vergleich, KI-Auswertung und Methodik.
+
+## Routen
 
 - `GET /api/health`
+- `GET /api/securities/search`
+- `GET /api/system/llm-check`
 - `POST /api/analyze`
 - `POST /api/recommend`
+- `POST /api/goal-chat`
 - `POST /api/ask`
 - `POST /api/export/csv`
 - `POST /api/export/pdf`
 
-## Datenabruf
+Die Chat-Routen akzeptieren höchstens 20 Nachrichten im Request und sind pro Client-IP auf 20 Anfragen pro Minute begrenzt. Exportdaten werden über den typisierten `ExportRequest` validiert.
 
-Historische Kursdaten werden ueber `yfinance` geladen. Das Backend nutzt einen einfachen In-Memory-Cache mit sechs Stunden Gueltigkeit fuer gleiche Ticker, Zeitraum und Frequenz.
+## Daten- und KI-Grenze
 
-## Berechnungslogik
+Die Quant-Schicht berechnet alle Zahlen. Die Interpretationsebene erhält für Empfehlungen und Rückfragen einen kompakten Analyse-Digest mit vorhandenen Assets, Kennzahlen, Risiken, Sektoren und optimierten Gewichten. Roh-Kovarianz und unnötige Performance-Rohdaten werden nicht in den Chat-Digest übernommen. LLM-Ausgaben werden auf JSON-Form, Länge, bekannte Ticker und unzulässige Kauf-/Verkaufssprache geprüft; bei Fehlern fällt die Anwendung auf Regeln zurück.
 
-Die Quant-Logik liegt in `backend/analysis.py`:
+Die Provider-Reihenfolge für `llmPreference=auto` ist LM Studio, Ollama, optionale Cloud-API und Regelmodus. `local` überspringt die Cloud, `cloud` nutzt nur den konfigurierten Cloud-Provider und danach Regeln. Ohne Provider verlassen Portfoliodaten den Rechner nicht.
 
-- Renditen aus Schlusskursen
-- annualisierte Rendite und Volatilitaet
-- Korrelations- und Kovarianzmatrix
-- Sharpe Ratio
-- historischer Value at Risk
-- Max-Sharpe-Optimierung
-- alternative Strategien
-- Risikobeitrag je Position ueber Kovarianzmatrix
+## Persistenz und Caching
 
-## KI-Komponente
-
-Die KI bekommt nur strukturierte Analyseergebnisse. Sie darf keine Kurse, Kennzahlen oder Marktdaten erfinden. Die Provider-Kette ist: LM Studio (OpenAI-kompatible API, Port 1234) -> Ollama (Port 11434) -> regelbasierter Fallback. Beide LLM-Provider laufen vollstaendig lokal; Portfoliodaten verlassen den Rechner nicht. Wenn kein Provider erreichbar ist, erzeugt das Backend regelbasierte Empfehlungen, einen strukturierten Bericht und Antworten auf Rueckfragen.
-
-## Lokaler LLM-Kompatibilitaets-Check
-
-`backend/system_check.py` erkennt RAM und GPU/VRAM des Rechners und schaetzt, welche lokalen Sprachmodelle (Q4_K_M/GGUF) lauffaehig sind. Die Schaetzlogik ist inspiriert von LLMcalc (github.com/Raskoll2/LLMcalc). Der Endpunkt `GET /api/system/llm-check` liefert Hardware-Infos, Modell-Einschaetzungen und den Status der lokalen Provider. Das Frontend zeigt das Ergebnis im Panel "Lokale KI & Datenschutz".
-
-## Speicherung
-
-Portfolios werden im Browser per LocalStorage gespeichert. Enthalten sind Name, Assets, Gewichtungen, Erstell-/Aenderungsdatum und optional das letzte Analyseergebnis. Die Speicherung ist bewusst gekapselt, damit spaeter eine Datenbank ersetzt werden kann.
-
-## Caching
-
-Kursdaten werden serverseitig in einem In-Memory-Cache gehalten. Der Cache ist pro Backend-Prozess gueltig und wird bei Neustart geleert. Das ist fuer den MVP ausreichend, ersetzt aber kein persistentes Produktions-Caching.
+Portfolios werden ausschließlich im Browser gespeichert. Der aktuelle Backend-Kursabruf verwendet keine persistente Datenbank und keinen dokumentierten serverseitigen Langzeit-Cache. Bei Neustart können Daten erneut von Yahoo Finance geladen werden.

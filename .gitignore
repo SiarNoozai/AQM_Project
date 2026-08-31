@@ -14,6 +14,7 @@ pnpm-debug.log*
 dev-server*.log
 backend-server*.log
 tmp/
+.playwright-cli/
 .venv/
 .env
 AQM_Praesentation_Gruppe1_V3.pptx

@@ -4,12 +4,8 @@ from typing import Any
 
 from fastapi import HTTPException
 
-try:
-    from .market_intelligence import PROFILE_FALLBACKS
-    from .models import SecuritySearchResponse, SecuritySearchResult
-except ImportError:
-    from market_intelligence import PROFILE_FALLBACKS
-    from models import SecuritySearchResponse, SecuritySearchResult
+from .market_intelligence import PROFILE_FALLBACKS
+from .models import SecuritySearchResponse, SecuritySearchResult
 
 
 ALLOWED_INSTRUMENT_TYPES = {"EQUITY", "ETF"}

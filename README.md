@@ -1,134 +1,135 @@
 # Portfolio- und Risikoanalyse-Tool
 
-Mockup-Prototyp fuer den ersten Projektmeilenstein am 15. Juli.
+Lokales MVP zur historischen Portfolioanalyse mit React/Vite-Frontend und FastAPI-Backend. Die Anwendung berechnet Kennzahlen aus Kursdaten, zeigt Risiken und eine nachvollziehbare historische Vergleichsvariante. Sie ist keine Anlageberatung und keine Prognosemaschine.
 
-## Ziel
+## Funktionsumfang
 
-Die Anwendung zeigt, wie Privatanleger ein Portfolio aus Aktien oder ETFs eingeben, historische Kennzahlen betrachten, Portfolio-Gewichtungen vergleichen und eine KI-gestuetzte Handlungsempfehlung lesen koennen.
+- Aktien und ETFs mit Gewichten eingeben, suchen, ergänzen, speichern und laden.
+- Historische Kurse über `yfinance`/Yahoo Finance; bei nicht verfügbaren Live-Daten klar gekennzeichneter Demo-Fallback.
+- Rendite (arithmetischer Erwartungswert und geometrische historische Rendite), Volatilität, Sharpe Ratio, historischer VaR mit Konfidenz und Horizont.
+- Diversifikationswert über effektive Positionsanzahl, Diversifikationsquotient, Korrelations- und Kovarianzmatrix, Sektoraufteilung und Risikohinweise.
+- Historische Max-Sharpe-Vergleichsvariante mit Schrumpfung der Kovarianzmatrix und konfigurierter Gewichtsobergrenze von 35 Prozent.
+- Profilbezogene Zieloptimierung im KI-Workspace: maximale Diversifikation, minimale Volatilität oder Max-Sharpe mit passender Obergrenze.
+- Lokales Zielgespräch und Rückfragenpanel. LM Studio/Ollama werden nur zur Textinterpretation eingesetzt; ohne erreichbaren Provider arbeitet der Regelmodus.
+- CSV- und PDF-Export mit Kennzahlen, Risikoanalyse, Vergleich, Chart, KI-Auswertung, Methodik und Demo-Kennzeichnung.
 
-## Aktueller Prototyp
+## Voraussetzungen
 
-- React + Vite Dashboard
-- FastAPI Backend fuer echte Kursdaten und Quant-Berechnung
-- yfinance/Yahoo Finance als historische Datenquelle
-- deterministische Demo-Kursdaten als stabiler Fallback
-- Portfolio-Gewichtungen per Slider
-- Kennzahlen: Rendite, Volatilitaet, Sharpe Ratio, Value at Risk
-- Charts: normalisierte Performance, Korrelationsmatrix, Effizienzgrenze aus API-Daten
-- Max-Sharpe-Optimierung mit SciPy
-- KI-Empfehlungsbereich via LM Studio oder Ollama (beide lokal), mit regelbasiertem Fallback
-- Lokaler LLM-Kompatibilitaets-Check: zeigt, welche Sprachmodelle die eigene Hardware ausfuehren kann (inspiriert von LLMcalc, github.com/Raskoll2/LLMcalc)
-- PDF- und CSV-Export fuer Bericht und Praesentation
+- Node.js und npm
+- Python 3.11 oder neuer
+- `uv`
+- Für Live-Daten Internetzugriff; für lokale KI optional Ollama oder LM Studio
 
-## Mit Docker starten (empfohlen fuer Windows + macOS)
+## Konfiguration
 
-Identische Umgebung auf jedem Rechner - kein Venv-, Pfad- oder Node-Setup noetig:
+Die Anwendung liest `.env` im Projektstamm und `backend/.env`. Ausgangspunkt ist [.env.example](/C:/Users/siyer/AQM%20Project/.env.example).
 
-```bash
-docker compose up --build
+Für die Cloud-KI legst du eine lokale Datei `.env` im Projektstamm neben `package.json` an und trägst dort für NVIDIA NIM ein:
+
+```env
+CLOUD_API_KEY=dein_nvidia_api_key
+CLOUD_BASE_URL=https://integrate.api.nvidia.com
+CLOUD_MODEL=nvidia/nemotron-3-nano-30b-a3b
 ```
 
-Danach: Frontend auf http://127.0.0.1:5173, Backend auf http://127.0.0.1:8000.
-Quellcode ist per Volume eingebunden - Aenderungen laden automatisch neu (Vite HMR + uvicorn --reload).
+Der Schlüssel bleibt damit im Backend und wird nicht an das Frontend ausgeliefert. Niemals den Key in `src/`, in eine `VITE_`-Variable oder in Git eintragen. Nach einer Änderung den Backend-Server neu starten und im KI-Workspace `Cloud-API` auswählen.
 
-LM Studio und Ollama laufen auf dem Host und werden aus den Containern ueber
-`host.docker.internal` erreicht. Eigene Adresse per Umgebungsvariable:
+| Variable | Zweck | Standardverhalten ohne Wert |
+|---|---|---|
+| `VITE_API_BASE_URL` | Basis-URL des FastAPI-Backends | Vite-Proxy bzw. gleiche Herkunft |
+| `VITE_PROXY_TARGET` | internes Ziel des lokalen Vite-API-Proxys | `http://127.0.0.1:8000` |
+| `CORS_ORIGINS` | erlaubte Browser-Herkünfte, kommasepariert | lokale Frontend-Adressen |
+| `OLLAMA_URL` / `OLLAMA_MODEL` | Ollama-Endpunkt und Modell | Provider wird versucht; bei Fehler Regelmodus |
+| `LMSTUDIO_URL` / `LMSTUDIO_URLS` / `LMSTUDIO_MODEL` | LM-Studio-Endpunkt(e) und Modell | Standardadressen auf Port 1234 werden versucht |
+| `LLM_TIMEOUT` | Timeout lokaler Modellanfragen in Sekunden | 90 |
+| `CLOUD_API_KEY` / `CLOUD_BASE_URL` / `CLOUD_MODEL` | optionaler OpenAI-kompatibler Cloud-Provider, z. B. NVIDIA NIM | Cloud wird übersprungen |
+| `CLOUD_TIMEOUT` | Timeout der Cloud-Anfrage in Sekunden | 45 |
+| `ALPHA_VANTAGE_API_KEY` | optionale News-Sentiment-Signale | News-Panel bleibt ausgeblendet |
 
-```bash
-LMSTUDIO_URL=http://host.docker.internal:1234 docker compose up
-```
+Die früher verwendeten Variablen `OPENAI_API_KEY`, `OPENAI_BASE_URL` und `OPENAI_MODEL` bleiben als Legacy-Aliase gültig.
 
-## Lokal starten
+## Start
 
-Am einfachsten startest du alles ueber genau eine Datei:
+Gesamte Anwendung:
 
 ```bash
 ./start-dev.sh
 ```
 
-Alternativ auf macOS per Doppelklick:
-
-```text
-start-dev.command
-```
-
-Oder per npm:
-
-```bash
-npm run dev
-```
-
-Das startet Frontend und Backend gemeinsam und beendet beide auch wieder zusammen mit `Ctrl + C`.
-
-Wenn du nur das Frontend starten willst:
+Alternativ getrennt:
 
 ```bash
 npm run dev:frontend
-```
-
-Wenn du nur das Backend starten willst:
-
-```bash
 npm run dev:backend
 ```
 
-Danach im Browser oeffnen:
-
-```text
-http://127.0.0.1:5173
-```
-
-Manuell brauchst du Frontend und Backend nur noch selten getrennt:
+Danach ist das Frontend unter `http://127.0.0.1:5173` und die API unter `http://127.0.0.1:8000` erreichbar. Mit Docker ist der Start ebenfalls möglich:
 
 ```bash
-cd backend
-uv sync
-uv run uvicorn main:app --reload --host 127.0.0.1 --port 8000
+docker compose up --build
 ```
 
-Falls `uv` auf deinem Rechner noch nicht installiert ist:
+## DigitalOcean
+
+### Droplet mit Docker Compose
+
+Auf dem Droplet wird die Datei `.env` neben `docker-compose.yml` angelegt. Die
+Cloud-Konfiguration gehört ausschließlich in den Backend-Teil:
+
+```env
+CLOUD_API_KEY=dein_nvidia_api_key
+CLOUD_BASE_URL=https://integrate.api.nvidia.com
+CLOUD_MODEL=nvidia/nemotron-3-nano-30b-a3b
+CORS_ORIGINS=https://deine-domain.example
+```
+
+Danach startest du die Services neu:
 
 ```bash
-python3 -m pip install uv
+docker compose up -d --build
 ```
 
-Health-Check:
+Das Frontend ruft `/api` unter derselben Herkunft auf; Compose leitet diese
+Anfragen intern an den Backend-Service weiter. Der NVIDIA-Schlüssel wird somit
+nicht im Browser veröffentlicht. Für Produktion sollte zusätzlich ein Reverse
+Proxy mit HTTPS vor dem Frontend stehen.
 
-```text
-http://127.0.0.1:8000/api/health
-```
+### App Platform
 
-Optional fuer lokale KI-Empfehlungen (eine der beiden Varianten):
+Für einen Backend-Service setzt du `CLOUD_API_KEY`, `CLOUD_BASE_URL` und
+`CLOUD_MODEL` als verschlüsselte Runtime-Umgebungsvariablen. `CORS_ORIGINS` muss
+die tatsächliche Frontend-URL enthalten, wenn Frontend und Backend auf getrennten
+Domains laufen. Setze niemals `CLOUD_API_KEY` als `VITE_*`-Variable: Vite würde
+sie in das ausgelieferte JavaScript einbauen.
 
-LM Studio (empfohlen): App starten, ein Modell laden (z. B. Dolphin 2.9 Llama3 8B Q4_K_M)
-und im Developer-Tab den lokalen Server starten (Port 1234).
+## Tests und Build
 
 ```bash
-ollama serve
-ollama pull llama3.1
+npm test
+npm run build
+uv run --project backend pytest backend/tests -q
 ```
 
-Provider-Kette: LM Studio -> Ollama -> regelbasierter Fallback. Wenn kein lokales
-Sprachmodell erreichbar ist, nutzt das Backend automatisch regelbasierte Empfehlungen.
-
-## Projektlogik
-
-Der Prototyp trennt bewusst zwischen:
-
-1. Daten- und Quant-Schicht
-2. KI-Empfehlungsschicht
-3. Praesentationsschicht
-
-Die aktuelle Version kann echte Daten ueber das lokale Backend laden. Der Demo-Modus bleibt als Praesentations-Fallback erhalten, wenn Backend, Internet oder yfinance nicht verfuegbar sind.
-
-## API-Ueberblick
+## API-Routen
 
 - `GET /api/health`
 - `GET /api/securities/search`
 - `GET /api/system/llm-check`
 - `POST /api/analyze`
 - `POST /api/recommend`
+- `POST /api/goal-chat`
+- `POST /api/ask`
 - `POST /api/export/csv`
 - `POST /api/export/pdf`
 
-Die Analyse basiert auf historischen Daten. Sie ist keine Anlageberatung und keine Prognose.
+## Methodik
+
+Für Preise \(P_t\) werden Periodenrenditen \(r_t=P_t/P_{t-1}-1\) verwendet. Die arithmetische Erwartungsrendite ist das Mittel der Periodenrenditen, annualisiert mit dem Frequenzfaktor. Die geometrische Rendite ist die annualisierte Wachstumsrate der Kursreihe: \((P_{Ende}/P_{Start})^{1/Jahre}-1\). Die Volatilität ist die annualisierte Standardabweichung; die Portfolio-Volatilität wird aus \(w^TΣw\) berechnet. Die Sharpe Ratio lautet \((R_p-r_f)/σ_p\).
+
+Der Value at Risk ist ein historisches unteres Quantil der Portfolio-Periodenrenditen bei der konfigurierten Konfidenz. Der Response nennt Methode und Horizont; bei der aktuellen Frontend-Konfiguration ist das ein Tag. Der Diversifikationswert basiert auf der effektiven Positionsanzahl \(N_{eff}=1/\sum_iw_i^2\) und wird für \(n\) Positionen auf 0 bis 100 skaliert: \((N_{eff}-1)/(n-1)·100\). Der Diversifikationsquotient ist \(\sum_iw_iσ_i/σ_p\).
+
+Die neutrale Vergleichsvariante maximiert die historische Sharpe Ratio mit Gewichten zwischen 0 und 35 Prozent, Summe 100 Prozent, und 20 Prozent Kovarianz-Schrumpfung in Richtung durchschnittlicher Korrelation. Profilziele können stattdessen minimale Volatilität, maximale Diversifikation oder eine andere Obergrenze verwenden. Diese Ergebnisse beschreiben nur den analysierten historischen Zeitraum.
+
+## Grenzen
+
+Die Datenqualität und Metadaten hängen von Yahoo Finance ab. Der Cache ist pro Prozess und nicht persistent. Portfolio-Speicherung erfolgt lokal im Browser. News und Sprachmodelle sind optional. Ein echtes Deployment wird durch diese lokale Prüfung nicht belegt.

@@ -8,11 +8,11 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from analysis import _build_sector_allocation, _calculate_returns, _metrics, _normalize_weights, run_analysis
-from main import app
-from models import AnalyzeRequest, AssetResult, RecommendRequest
-from recommendations import build_rule_recommendation_response
-from search import search_securities
+from backend.analysis import MarketDataUnavailable, _build_sector_allocation, _calculate_returns, _metrics, _normalize_weights, run_analysis
+from backend.main import app
+from backend.models import AnalyzeRequest, AssetResult, RecommendRequest
+from backend.recommendations import build_rule_recommendation_response
+from backend.search import search_securities
 
 
 def test_calculate_returns_daily() -> None:
@@ -173,6 +173,17 @@ def test_api_health_and_validation_error() -> None:
     assert response.status_code == 422
 
 
+def test_unexpected_api_errors_use_stable_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail_search(*_args, **_kwargs):
+        raise RuntimeError("internal details")
+
+    monkeypatch.setattr("backend.main.search_securities", fail_search)
+    response = TestClient(app, raise_server_exceptions=False).get("/api/securities/search?q=unexpected")
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "Ein unerwarteter Serverfehler ist aufgetreten. Bitte versuche es erneut."}
+
+
 def test_search_securities_returns_local_catalog_results() -> None:
     response = search_securities("Apple", 5)
 
@@ -192,9 +203,9 @@ def test_run_analysis_falls_back_to_demo_when_live_download_fails(monkeypatch: p
     )
 
     def fail_download(_: AnalyzeRequest) -> pd.DataFrame:
-        raise HTTPException(status_code=502, detail="Yahoo langsam")
+        raise MarketDataUnavailable("Yahoo langsam")
 
-    monkeypatch.setattr("analysis._download_prices", fail_download)
+    monkeypatch.setattr("backend.analysis._download_prices", fail_download)
 
     response = run_analysis(request)
 
@@ -202,3 +213,25 @@ def test_run_analysis_falls_back_to_demo_when_live_download_fails(monkeypatch: p
     assert "Demo-Daten" in response.data_source
     assert len(response.assets) == 4
     assert response.performance
+
+
+def test_short_live_history_remains_a_422_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    request = AnalyzeRequest(
+        tickers=["AAPL", "MSFT"],
+        weights=[50, 50],
+        startDate="2024-01-01",
+        endDate="2024-01-03",
+        frequency="1d",
+        riskFreeRate=0.02,
+        varConfidence=0.95,
+    )
+    prices = pd.DataFrame(
+        {"AAPL": [100.0, 101.0], "MSFT": [100.0, 99.0]},
+        index=pd.date_range("2024-01-01", periods=2, freq="D"),
+    )
+    monkeypatch.setattr("backend.analysis._download_prices", lambda _: prices)
+
+    with pytest.raises(HTTPException) as error:
+        run_analysis(request)
+
+    assert error.value.status_code == 422

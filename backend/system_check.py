@@ -1,11 +1,11 @@
-"""Lokaler LLM-Kompatibilitaets-Check.
+"""Lokaler LLM-Kompatibilitäts-Check.
 
-Erkennt RAM/VRAM des Rechners und schaetzt, welche lokalen Sprachmodelle
-(GGUF, Q4_K_M-Quantisierung) darauf lauffaehig sind. Die Schaetzlogik ist
+Erkennt RAM/VRAM des Rechners und schätzt, welche lokalen Sprachmodelle
+(GGUF, Q4_K_M-Quantisierung) darauf lauffähig sind. Die Schätzlogik ist
 inspiriert von LLMcalc (https://github.com/Raskoll2/LLMcalc).
 
-Zusaetzlich prueft das Modul, ob LM Studio oder Ollama lokal erreichbar
-sind und welches Modell dort aktuell geladen ist. Alles laeuft zu 100 %
+Zusätzlich prüft das Modul, ob LM Studio oder Ollama lokal erreichbar
+sind und welches Modell dort aktuell geladen ist. Alles läuft zu 100 %
 lokal - es verlassen keine Portfoliodaten den Rechner.
 """
 
@@ -18,16 +18,13 @@ from typing import Any
 
 import httpx
 
-try:
-    from .recommendations import lmstudio_candidate_urls
-except ImportError:
-    from recommendations import lmstudio_candidate_urls
+from .recommendations import lmstudio_candidate_urls
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 PROBE_TIMEOUT = 2.0
 
-# Q4_K_M-Dateigroessen (GB) gaengiger lokaler Modelle plus Overhead-Puffer.
-# Quelle der Groessen: Hugging Face GGUF-Repos; Logik angelehnt an LLMcalc.
+# Q4_K_M-Dateigrößen (GB) gängiger lokaler Modelle plus Overhead-Puffer.
+# Quelle der Größen: Hugging Face GGUF-Repos; Logik angelehnt an LLMcalc.
 MODEL_CATALOG: list[dict[str, Any]] = [
     {"name": "Llama 3.2 1B", "params": "1B", "sizeGb": 0.9},
     {"name": "Llama 3.2 3B", "params": "3B", "sizeGb": 2.1},
@@ -128,14 +125,14 @@ def _classify(size_gb: float, ram_gb: float, vram_gb: float) -> dict[str, Any]:
     usable_ram = ram_gb * CPU_USABLE_RAM_FRACTION
 
     if vram_gb and required <= vram_gb:
-        return {"status": "gpu", "label": "Laeuft komplett auf der GPU (schnell)"}
+        return {"status": "gpu", "label": "Läuft komplett auf der GPU (schnell)"}
     if vram_gb and required <= vram_gb + usable_ram:
         if required <= usable_ram:
-            return {"status": "cpu", "label": "Laeuft im RAM auf der CPU (solide)"}
-        return {"status": "partial", "label": "Laeuft mit GPU-Teilauslagerung (mittel)"}
+            return {"status": "cpu", "label": "Läuft im RAM auf der CPU (solide)"}
+        return {"status": "partial", "label": "Läuft mit GPU-Teilauslagerung (mittel)"}
     if required <= usable_ram:
-        return {"status": "cpu", "label": "Laeuft im RAM auf der CPU (solide)"}
-    return {"status": "no", "label": "Zu gross fuer diesen Rechner"}
+        return {"status": "cpu", "label": "Läuft im RAM auf der CPU (solide)"}
+    return {"status": "no", "label": "Zu groß für diesen Rechner"}
 
 
 async def _probe_lmstudio() -> dict[str, Any]:
@@ -188,7 +185,7 @@ async def build_llm_check() -> dict[str, Any]:
             "ollama": {"url": OLLAMA_URL, **ollama},
         },
         "quantization": "Q4_K_M (GGUF)",
-        "methodologyCredit": "Schaetzlogik inspiriert von LLMcalc - github.com/Raskoll2/LLMcalc",
+        "methodologyCredit": "Schätzlogik inspiriert von LLMcalc - github.com/Raskoll2/LLMcalc",
         "privacyNote": (
             "Alle Angaben werden lokal auf diesem Rechner ermittelt. "
             "Bei Nutzung eines lokalen Sprachmodells verlassen keine Portfoliodaten das System."

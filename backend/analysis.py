@@ -7,38 +7,31 @@ import numpy as np
 import pandas as pd
 from fastapi import HTTPException
 
-try:
-    from .market_intelligence import fetch_asset_profiles
-    from .models import (
-        AnalysisResponse,
-        AnalyzeRequest,
-        AssetResult,
-        CorrelationMatrix,
-        FrontierPoint,
-        PortfolioMetrics,
-        RiskFinding,
-        SectorAllocationItem,
-    )
-except ImportError:
-    from market_intelligence import fetch_asset_profiles
-    from models import (
-        AnalysisResponse,
-        AnalyzeRequest,
-        AssetResult,
-        CorrelationMatrix,
-        FrontierPoint,
-        PortfolioMetrics,
-        RiskFinding,
-        SectorAllocationItem,
-    )
+from .market_intelligence import fetch_asset_profiles
+from .models import (
+    AnalysisResponse,
+    AnalyzeRequest,
+    AssetResult,
+    CorrelationMatrix,
+    OptimizationSettings,
+    PortfolioMetrics,
+    RiskFinding,
+    SectorAllocationItem,
+)
+
+
+class MarketDataUnavailable(RuntimeError):
+    """A provider or transport failure that can safely use demo data."""
 
 
 DISCLAIMER = (
     "Dies ist keine Anlageberatung. Die Analyse basiert auf historischen Yahoo-Finance-Daten "
-    "ueber yfinance und bietet keine Prognosegarantie."
+    "über yfinance und bietet keine Prognosegarantie."
 )
-DEMO_DATA_SOURCE = "Lokale Demo-Daten (Live-Marktdaten waren nicht rechtzeitig verfuegbar)"
-DEMO_DISCLAIMER_SUFFIX = " Fuer diese Auswertung wurden lokale Demo-Annahmen statt Live-Daten verwendet."
+DEMO_DATA_SOURCE = "Lokale Demo-Daten (Live-Marktdaten waren nicht rechtzeitig verfügbar)"
+DEMO_DISCLAIMER_SUFFIX = " Für diese Auswertung wurden lokale Demo-Annahmen statt Live-Daten verwendet."
+OPTIMIZATION_MAX_WEIGHT = 0.35
+OPTIMIZATION_SHRINKAGE_INTENSITY = 0.2
 
 
 @dataclass(frozen=True)
@@ -90,10 +83,7 @@ def _get_yfinance():
     try:
         import yfinance as yf
     except Exception as exc:  # pragma: no cover - depends on local environment
-        raise HTTPException(
-            status_code=503,
-            detail="Das Marktdaten-Modul konnte nicht geladen werden. Bitte starte das Backend neu.",
-        ) from exc
+        raise MarketDataUnavailable("Das Marktdaten-Modul konnte nicht geladen werden.") from exc
 
     return yf
 
@@ -110,11 +100,9 @@ def run_analysis(request: AnalyzeRequest) -> AnalysisResponse:
         if returns.empty or len(returns) < 10:
             raise HTTPException(
                 status_code=422,
-                detail="Nicht genug Kursdaten fuer eine belastbare Analyse gefunden.",
+                detail="Nicht genug Kursdaten für eine belastbare Analyse gefunden.",
             )
-    except HTTPException as exc:
-        if not _should_use_demo_fallback(exc):
-            raise
+    except MarketDataUnavailable:
         prices = _build_demo_prices(request)
         returns = _calculate_returns(prices, request.frequency)
         mode = "demo"
@@ -126,8 +114,22 @@ def run_analysis(request: AnalyzeRequest) -> AnalysisResponse:
     mean_returns = returns.mean() * annual_factor
     covariance = returns.cov() * annual_factor
     correlation = returns.corr()
-    current_metrics = _metrics(mean_returns, covariance, returns, weights, request.risk_free_rate, request.var_confidence)
-    optimized_weights = _optimize_max_sharpe(mean_returns, covariance, request.risk_free_rate)
+    current_metrics = _metrics(
+        mean_returns,
+        covariance,
+        returns,
+        weights,
+        request.risk_free_rate,
+        request.var_confidence,
+        prices=prices,
+        frequency=request.frequency,
+    )
+    optimized_weights, optimization_converged = _optimize_max_sharpe_with_status(
+        mean_returns,
+        covariance,
+        request.risk_free_rate,
+        max_weight=OPTIMIZATION_MAX_WEIGHT,
+    )
     optimized_metrics = _metrics(
         mean_returns,
         covariance,
@@ -135,8 +137,9 @@ def run_analysis(request: AnalyzeRequest) -> AnalysisResponse:
         optimized_weights,
         request.risk_free_rate,
         request.var_confidence,
+        prices=prices,
+        frequency=request.frequency,
     )
-    frontier = _build_frontier(mean_returns, covariance, request.risk_free_rate, weights, optimized_weights)
     performance = _build_performance(prices, weights, optimized_weights)
     asset_results = _build_asset_results(request.tickers, weights, mean_returns, covariance, prices, profiles)
     sector_allocation = _build_sector_allocation(asset_results)
@@ -163,7 +166,12 @@ def run_analysis(request: AnalyzeRequest) -> AnalysisResponse:
         ),
         covarianceMatrix=_matrix_to_lists(covariance),
         performance=performance,
-        frontier=frontier,
+        optimizationSettings=OptimizationSettings(
+            objective="max_sharpe",
+            maxWeight=OPTIMIZATION_MAX_WEIGHT,
+            shrinkageIntensity=OPTIMIZATION_SHRINKAGE_INTENSITY,
+            converged=optimization_converged,
+        ),
         recommendations=build_rule_recommendations(
             request.tickers,
             weights,
@@ -199,18 +207,18 @@ def build_rule_recommendations(
     return [
         main_finding
         or (
-            f"Die groesste Einzelposition ist {tickers[dominant_index]} mit "
-            f"{weight_array[dominant_index] * 100:.1f} Prozent. Pruefe, ob diese Konzentration "
+            f"Die größte Einzelposition ist {tickers[dominant_index]} mit "
+            f"{weight_array[dominant_index] * 100:.1f} Prozent. Prüfe, ob diese Konzentration "
             "zu deinem Risikoprofil passt."
         ),
         (
-            f"Eine datenbasierte Portfolioverbesserung waere, {tickers[largest_shift_index]} von "
+            f"Eine datenbasierte Portfolioverbesserung wäre, {tickers[largest_shift_index]} von "
             f"{weight_array[largest_shift_index] * 100:.1f} Prozent auf "
             f"{optimized_array[largest_shift_index] * 100:.1f} Prozent umzugewichten, "
             "um die Gewichte breiter und nachvollziehbarer zu verteilen."
         ),
         (
-            f"Diese Anpassung stuetzt sich auf die berechneten Kennzahlen: Die Sharpe Ratio veraendert sich um "
+            f"Diese Anpassung stützt sich auf die berechneten Kennzahlen: Die Sharpe Ratio verändert sich um "
             f"{sharpe_delta:.2f} Punkte und das Risiko um {risk_change * 100:+.1f} Prozentpunkte. "
             "Die Empfehlung basiert nur auf historischen Analysedaten."
         ),
@@ -234,7 +242,7 @@ def _build_risk_findings(
                 severity="high" if dominant_weight >= 0.45 else "medium",
                 message=(
                     f"{tickers[dominant_index]} ist mit {dominant_weight * 100:.1f} Prozent stark gewichtet. "
-                    "Das kann dein Portfolio anfaelliger fuer Einzelrisiken machen."
+                    "Das kann dein Portfolio anfälliger für Einzelrisiken machen."
                 ),
             )
         )
@@ -260,7 +268,8 @@ def _build_risk_findings(
                 severity="medium",
                 message=(
                     f"Der Diversifikationswert liegt bei {metrics.diversification_score:.1f} von 100. "
-                    "Eine breitere Gewichtung koennte das Portfolio robuster machen."
+                    f"Das entspricht rechnerisch etwa {metrics.effective_holdings:.1f} gleich gewichteten Positionen. "
+                    "Eine breitere Gewichtung könnte das Portfolio robuster machen."
                 ),
             )
         )
@@ -271,8 +280,8 @@ def _build_risk_findings(
                 type="volatility",
                 severity="high" if metrics.volatility >= 0.32 else "medium",
                 message=(
-                    f"Die historische Volatilitaet liegt bei {metrics.volatility * 100:.1f} Prozent pro Jahr. "
-                    "Das spricht fuer spuerbare Schwankungen im Portfolio."
+                    f"Die historische Volatilität liegt bei {metrics.volatility * 100:.1f} Prozent pro Jahr. "
+                    "Das spricht für spürbare Schwankungen im Portfolio."
                 ),
             )
         )
@@ -283,7 +292,7 @@ def _build_risk_findings(
                 type="risk_return",
                 severity="low",
                 message=(
-                    "Die berechnete Vergleichsvariante erreicht ein besseres Rendite-Risiko-Verhaeltnis. "
+                    "Die berechnete Vergleichsvariante erreicht ein besseres Rendite-Risiko-Verhältnis. "
                     "Es lohnt sich daher, die aktuelle Gewichtung kritisch mit der optimierten Alternative zu vergleichen."
                 ),
             )
@@ -304,30 +313,26 @@ def _download_prices(request: AnalyzeRequest) -> pd.DataFrame:
             progress=False,
             group_by="column",
             threads=False,
-            timeout=6,
+            timeout=15,
         )
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Kursdaten konnten nicht geladen werden: {exc}") from exc
+        raise MarketDataUnavailable(f"Kursdaten konnten nicht geladen werden: {exc}") from exc
 
     if data.empty:
-        raise HTTPException(status_code=422, detail="Keine Kursdaten fuer die angegebenen Ticker gefunden.")
+        raise HTTPException(status_code=422, detail="Keine Kursdaten für die angegebenen Ticker gefunden.")
 
     prices = _extract_close_prices(data, request.tickers)
     prices = prices.dropna(axis=1, how="all").ffill().dropna()
     missing = [ticker for ticker in request.tickers if ticker not in prices.columns]
     if missing:
-        raise HTTPException(status_code=422, detail=f"Keine verwertbaren Kursdaten fuer: {', '.join(missing)}")
+        raise HTTPException(status_code=422, detail=f"Keine verwertbaren Kursdaten für: {', '.join(missing)}")
     if prices.shape[1] != len(request.tickers):
-        raise HTTPException(status_code=422, detail="Nicht fuer alle Ticker liegen verwertbare Kursdaten vor.")
+        raise HTTPException(status_code=422, detail="Nicht für alle Ticker liegen verwertbare Kursdaten vor.")
     return prices[request.tickers]
 
 
-def _should_use_demo_fallback(error: HTTPException) -> bool:
-    if error.status_code >= 500:
-        return True
-
-    detail = str(error.detail).lower()
-    return "keine kursdaten" in detail or "nicht genug kursdaten" in detail
+def _should_use_demo_fallback(error: BaseException) -> bool:
+    return isinstance(error, MarketDataUnavailable)
 
 
 def _build_demo_prices(request: AnalyzeRequest) -> pd.DataFrame:
@@ -370,11 +375,11 @@ def _extract_close_prices(data: pd.DataFrame, tickers: list[str]) -> pd.DataFram
         elif "Adj Close" in data.columns.get_level_values(0):
             prices = data["Adj Close"].copy()
         else:
-            raise HTTPException(status_code=422, detail="Yahoo-Finance-Antwort enthaelt keine Schlusskurse.")
+            raise MarketDataUnavailable("Yahoo-Finance-Antwort enthält keine Schlusskurse.")
     else:
         close_column = "Close" if "Close" in data.columns else "Adj Close"
         if close_column not in data.columns:
-            raise HTTPException(status_code=422, detail="Yahoo-Finance-Antwort enthaelt keine Schlusskurse.")
+            raise MarketDataUnavailable("Yahoo-Finance-Antwort enthält keine Schlusskurse.")
         prices = data[[close_column]].copy()
         prices.columns = [tickers[0]]
 
@@ -403,7 +408,7 @@ def _annualization_factor(frequency: str) -> int:
 def _normalize_weights(weights: np.ndarray) -> np.ndarray:
     total = float(weights.sum())
     if total <= 0:
-        raise HTTPException(status_code=422, detail="Gewichtssumme muss groesser als null sein.")
+        raise HTTPException(status_code=422, detail="Gewichtssumme muss größer als null sein.")
     return weights / total
 
 
@@ -414,6 +419,8 @@ def _metrics(
     weights: np.ndarray,
     risk_free_rate: float,
     var_confidence: float,
+    prices: pd.DataFrame | None = None,
+    frequency: str = "1d",
 ) -> PortfolioMetrics:
     expected_return = float(np.dot(weights, mean_returns.to_numpy()))
     volatility = float(np.sqrt(weights.T @ covariance.to_numpy() @ weights))
@@ -422,6 +429,12 @@ def _metrics(
     tail_probability = 1 - var_confidence
     historical_var = float(abs(np.quantile(portfolio_returns, tail_probability)))
     diversification_score = _diversification_score(weights)
+    individual_volatilities = np.sqrt(np.maximum(np.diag(covariance.to_numpy()), 0.0))
+    diversification_ratio = (
+        float(np.dot(weights, individual_volatilities) / volatility) if volatility > 0 else 0.0
+    )
+    effective_holdings = _effective_holdings(weights)
+    geometric_return = _portfolio_geometric_return(prices, weights) if prices is not None else expected_return
 
     return PortfolioMetrics(
         expectedReturn=expected_return,
@@ -429,90 +442,163 @@ def _metrics(
         sharpeRatio=sharpe,
         valueAtRisk=historical_var,
         diversificationScore=diversification_score,
+        effectiveHoldings=round(effective_holdings, 1),
+        diversificationRatio=round(diversification_ratio, 4),
+        valueAtRiskHorizonDays=_var_horizon_days(frequency),
+        valueAtRiskMethod="historisch",
+        annualizedReturnGeometric=geometric_return,
     )
 
 
-def _optimize_max_sharpe(mean_returns: pd.Series, covariance: pd.DataFrame, risk_free_rate: float) -> np.ndarray:
+def _optimize_max_sharpe(
+    mean_returns: pd.Series,
+    covariance: pd.DataFrame,
+    risk_free_rate: float,
+    max_weight: float = OPTIMIZATION_MAX_WEIGHT,
+    min_weight: float = 0.0,
+) -> np.ndarray:
+    weights, _ = _optimize_max_sharpe_with_status(mean_returns, covariance, risk_free_rate, max_weight, min_weight)
+    return weights
+
+
+def _optimize_max_sharpe_with_status(
+    mean_returns: pd.Series,
+    covariance: pd.DataFrame,
+    risk_free_rate: float,
+    max_weight: float = OPTIMIZATION_MAX_WEIGHT,
+    min_weight: float = 0.0,
+) -> tuple[np.ndarray, bool]:
+    return _optimize_portfolio_with_status(
+        mean_returns,
+        covariance,
+        risk_free_rate,
+        objective="max_sharpe",
+        max_weight=max_weight,
+        min_weight=min_weight,
+    )
+
+
+def optimize_portfolio(
+    mean_returns: pd.Series | np.ndarray,
+    covariance: pd.DataFrame | np.ndarray,
+    risk_free_rate: float,
+    objective: str,
+    max_weight: float,
+    min_weight: float = 0.0,
+) -> np.ndarray:
+    """Optimiert ein Portfolio mit einem expliziten Ziel und Gewichtsgrenzen."""
+    weights, _ = _optimize_portfolio_with_status(
+        mean_returns,
+        covariance,
+        risk_free_rate,
+        objective,
+        max_weight,
+        min_weight,
+    )
+    return weights
+
+
+def _optimize_portfolio_with_status(
+    mean_returns: pd.Series | np.ndarray,
+    covariance: pd.DataFrame | np.ndarray,
+    risk_free_rate: float,
+    objective: str,
+    max_weight: float,
+    min_weight: float = 0.0,
+) -> tuple[np.ndarray, bool]:
     # SciPy is only needed for optimization requests; importing it lazily keeps API startup responsive.
     from scipy.optimize import minimize
 
-    asset_count = len(mean_returns)
+    returns_array = np.asarray(mean_returns, dtype=float)
+    covariance_array = np.asarray(covariance, dtype=float)
+    if returns_array.ndim != 1 or returns_array.size == 0:
+        raise ValueError("mean_returns muss ein nichtleeres eindimensionales Array sein.")
+    asset_count = returns_array.size
+    if covariance_array.shape != (asset_count, asset_count) or not np.isfinite(covariance_array).all():
+        raise ValueError("covariance muss eine endliche quadratische Matrix sein.")
+    objective_name = objective
+    if objective_name not in {"max_sharpe", "min_volatility", "max_diversification"}:
+        raise ValueError(f"Unbekanntes Optimierungsziel: {objective}")
+
+    covariance_array = (covariance_array + covariance_array.T) / 2
+    covariance_array = np.asarray(_shrink_covariance(covariance_array), dtype=float)
+    lower, upper = _optimization_bounds(asset_count, max_weight, min_weight)
     initial = np.repeat(1 / asset_count, asset_count)
-    bounds = tuple((0.0, 1.0) for _ in range(asset_count))
+    bounds = tuple((lower, upper) for _ in range(asset_count))
     constraints = ({"type": "eq", "fun": lambda weights: np.sum(weights) - 1.0},)
+    individual_volatilities = np.sqrt(np.maximum(np.diag(covariance_array), 0.0))
 
-    def objective(weights: np.ndarray) -> float:
-        expected_return = float(np.dot(weights, mean_returns.to_numpy()))
-        volatility = float(np.sqrt(weights.T @ covariance.to_numpy() @ weights))
-        if volatility <= 0:
+    def objective_function(weights: np.ndarray) -> float:
+        portfolio_volatility = float(np.sqrt(max(weights.T @ covariance_array @ weights, 0.0)))
+        if objective_name == "min_volatility":
+            return portfolio_volatility
+        if objective_name == "max_diversification":
+            if portfolio_volatility <= 0:
+                return 1e6
+            return -float(np.dot(weights, individual_volatilities) / portfolio_volatility)
+        expected_return = float(np.dot(weights, returns_array))
+        if portfolio_volatility <= 0:
             return 1e6
-        return -((expected_return - risk_free_rate) / volatility)
+        return -((expected_return - risk_free_rate) / portfolio_volatility)
 
-    result = minimize(objective, initial, method="SLSQP", bounds=bounds, constraints=constraints)
-    if not result.success:
-        return initial
-    return _normalize_weights(np.clip(result.x, 0, 1))
+    result = minimize(objective_function, initial, method="SLSQP", bounds=bounds, constraints=constraints)
+    if not result.success or not np.isfinite(result.x).all():
+        return initial, False
 
-
-def _build_frontier(
-    mean_returns: pd.Series,
-    covariance: pd.DataFrame,
-    risk_free_rate: float,
-    current_weights: np.ndarray,
-    optimized_weights: np.ndarray,
-) -> list[FrontierPoint]:
-    points: list[FrontierPoint] = []
-    asset_count = len(mean_returns)
-    rng = np.random.default_rng(42)
-    for index in range(140):
-        weights = rng.dirichlet(np.ones(asset_count))
-        risk, expected_return, sharpe = _risk_return_sharpe(mean_returns, covariance, weights, risk_free_rate)
-        points.append(
-            FrontierPoint(
-                id=index,
-                risk=risk,
-                return_=expected_return,
-                sharpe=sharpe,
-                weights=[float(value) for value in weights],
-                kind="simulation",
-            )
-        )
-
-    current = _risk_return_sharpe(mean_returns, covariance, current_weights, risk_free_rate)
-    optimized = _risk_return_sharpe(mean_returns, covariance, optimized_weights, risk_free_rate)
-    points.extend(
-        [
-            FrontierPoint(
-                id=900,
-                risk=current[0],
-                return_=current[1],
-                sharpe=current[2],
-                weights=[float(value) for value in current_weights],
-                kind="current",
-            ),
-            FrontierPoint(
-                id=901,
-                risk=optimized[0],
-                return_=optimized[1],
-                sharpe=optimized[2],
-                weights=[float(value) for value in optimized_weights],
-                kind="optimized",
-            ),
-        ]
-    )
-    return points
+    weights = _fit_weights_to_bounds(np.asarray(result.x, dtype=float), lower, upper)
+    if weights is None:
+        return initial, False
+    return weights, True
 
 
-def _risk_return_sharpe(
-    mean_returns: pd.Series,
-    covariance: pd.DataFrame,
-    weights: np.ndarray,
-    risk_free_rate: float,
-) -> tuple[float, float, float]:
-    expected_return = float(np.dot(weights, mean_returns.to_numpy()))
-    risk = float(np.sqrt(weights.T @ covariance.to_numpy() @ weights))
-    sharpe = float((expected_return - risk_free_rate) / risk) if risk > 0 else 0.0
-    return risk, expected_return, sharpe
+def _optimization_bounds(asset_count: int, max_weight: float, min_weight: float) -> tuple[float, float]:
+    lower = max(0.0, float(min_weight))
+    upper = min(1.0, float(max_weight))
+    upper = max(upper, 1 / asset_count)
+    if lower > upper or lower * asset_count > 1 + 1e-9:
+        raise ValueError("Die Gewichtsgrenzen lassen kein vollständig investiertes Portfolio zu.")
+    return lower, upper
+
+
+def _fit_weights_to_bounds(weights: np.ndarray, lower: float, upper: float) -> np.ndarray | None:
+    fitted = np.clip(weights, lower, upper)
+    for _ in range(len(fitted) + 2):
+        difference = 1.0 - float(fitted.sum())
+        if abs(difference) <= 1e-10:
+            return fitted / fitted.sum()
+        if difference > 0:
+            capacity = np.maximum(upper - fitted, 0.0)
+            capacity_sum = float(capacity.sum())
+            if capacity_sum <= 1e-12:
+                break
+            fitted += capacity / capacity_sum * difference
+        else:
+            capacity = np.maximum(fitted - lower, 0.0)
+            capacity_sum = float(capacity.sum())
+            if capacity_sum <= 1e-12:
+                break
+            fitted -= capacity / capacity_sum * (-difference)
+        fitted = np.clip(fitted, lower, upper)
+    return fitted if abs(float(fitted.sum()) - 1.0) <= 1e-8 else None
+
+
+def _shrink_covariance(covariance: pd.DataFrame | np.ndarray, intensity: float = OPTIMIZATION_SHRINKAGE_INTENSITY) -> pd.DataFrame | np.ndarray:
+    """Zieht die Kovarianz in Richtung einer Matrix mit Durchschnittskorrelation."""
+    value = np.asarray(covariance, dtype=float)
+    if value.ndim != 2 or value.shape[0] != value.shape[1] or not np.isfinite(value).all():
+        raise ValueError("Kovarianzmatrix muss endlich und quadratisch sein.")
+    intensity = min(max(float(intensity), 0.0), 1.0)
+    value = (value + value.T) / 2
+    deviations = np.sqrt(np.maximum(np.diag(value), 1e-12))
+    correlation = value / np.outer(deviations, deviations)
+    off_diagonal = correlation[~np.eye(value.shape[0], dtype=bool)]
+    average_correlation = float(np.mean(off_diagonal)) if off_diagonal.size else 0.0
+    target = np.outer(deviations, deviations) * np.clip(average_correlation, -0.95, 0.95)
+    np.fill_diagonal(target, np.diag(value))
+    shrunk = (1 - intensity) * value + intensity * target
+    if isinstance(covariance, pd.DataFrame):
+        return pd.DataFrame(shrunk, index=covariance.index, columns=covariance.columns)
+    return shrunk
 
 
 def _build_performance(prices: pd.DataFrame, weights: np.ndarray, optimized_weights: np.ndarray) -> list[dict[str, float | str]]:
@@ -557,6 +643,7 @@ def _build_asset_results(
                 expectedReturn=float(mean_returns[ticker]),
                 volatility=float(np.sqrt(covariance.loc[ticker, ticker])),
                 lastPrice=float(prices[ticker].iloc[-1]),
+                annualizedReturnGeometric=_annualized_geometric_return(prices[ticker]),
             )
         )
     return results
@@ -585,8 +672,33 @@ def _matrix_to_lists(matrix: pd.DataFrame) -> list[list[float]]:
 
 
 def _diversification_score(weights: np.ndarray) -> float:
-    herfindahl = float(np.sum(weights * weights))
-    return max(0.0, min(100.0, (1 - herfindahl) * 140))
+    if len(weights) <= 1:
+        return 0.0
+    effective_holdings = _effective_holdings(weights)
+    return max(0.0, min(100.0, (effective_holdings - 1) / (len(weights) - 1) * 100))
+
+
+def _effective_holdings(weights: np.ndarray) -> float:
+    herfindahl = float(np.sum(np.square(weights)))
+    return 1 / herfindahl if herfindahl > 0 else 0.0
+
+
+def _var_horizon_days(frequency: str) -> int:
+    return {"1d": 1, "1wk": 7, "1mo": 30}.get(frequency, 1)
+
+
+def _annualized_geometric_return(series: pd.Series) -> float:
+    clean = series.dropna()
+    if len(clean) < 2 or float(clean.iloc[0]) <= 0 or float(clean.iloc[-1]) <= 0:
+        return 0.0
+    elapsed_years = max((clean.index[-1] - clean.index[0]).days / 365.25, 1 / 365.25)
+    return float((float(clean.iloc[-1]) / float(clean.iloc[0])) ** (1 / elapsed_years) - 1)
+
+
+def _portfolio_geometric_return(prices: pd.DataFrame, weights: np.ndarray) -> float:
+    normalized = prices.div(prices.iloc[0])
+    portfolio_values = normalized.mul(weights, axis=1).sum(axis=1)
+    return _annualized_geometric_return(portfolio_values)
 
 
 def _high_correlation_pairs(correlation: pd.DataFrame, threshold: float = 0.75) -> list[tuple[str, str]]:

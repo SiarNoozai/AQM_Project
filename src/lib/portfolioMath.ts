@@ -1,46 +1,5 @@
 import { AssetInput, baseCorrelationMatrix } from "../data/assets";
 
-export type PortfolioMetrics = {
-  expectedReturn: number;
-  volatility: number;
-  sharpeRatio: number;
-  valueAtRisk: number;
-  diversificationScore: number;
-};
-
-export type FrontierPoint = {
-  id: number;
-  risk: number;
-  return: number;
-  sharpe: number;
-  weights: number[];
-  kind: "simulation" | "current" | "optimized";
-};
-
-export type PerformancePoint = {
-  month: string;
-  portfolio: number;
-  optimized: number;
-  [ticker: string]: string | number;
-};
-
-const riskFreeRate = 0.025;
-
-const monthLabels = [
-  "Jan",
-  "Feb",
-  "Mrz",
-  "Apr",
-  "Mai",
-  "Jun",
-  "Jul",
-  "Aug",
-  "Sep",
-  "Okt",
-  "Nov",
-  "Dez",
-];
-
 export function normalizeWeights(assets: AssetInput[]) {
   const total = assets.reduce((sum, asset) => sum + Math.max(asset.weight, 0), 0);
 
@@ -51,26 +10,17 @@ export function normalizeWeights(assets: AssetInput[]) {
   return assets.map((asset) => Math.max(asset.weight, 0) / total);
 }
 
-export function calculatePortfolioMetrics(
-  assets: AssetInput[],
-  weights = normalizeWeights(assets),
-): PortfolioMetrics {
-  const expectedReturn = weights.reduce(
-    (sum, weight, index) => sum + weight * assets[index].expectedReturn,
-    0,
-  );
-  const volatility = calculatePortfolioVolatility(assets, weights);
-  const sharpeRatio = volatility > 0 ? (expectedReturn - riskFreeRate) / volatility : 0;
-  const valueAtRisk = expectedReturn / 252 - 1.65 * (volatility / Math.sqrt(252));
-  const diversificationScore = calculateDiversificationScore(weights);
-
-  return {
-    expectedReturn,
-    volatility,
-    sharpeRatio,
-    valueAtRisk: Math.abs(valueAtRisk),
-    diversificationScore,
-  };
+export function calculateHistoricalValueAtRisk(returns: number[], confidence = 0.95) {
+  if (returns.length === 0) {
+    return 0;
+  }
+  const sorted = [...returns].sort((left, right) => left - right);
+  const position = (1 - confidence) * (sorted.length - 1);
+  const lowerIndex = Math.floor(position);
+  const upperIndex = Math.ceil(position);
+  const fraction = position - lowerIndex;
+  const quantile = sorted[lowerIndex] + (sorted[upperIndex] - sorted[lowerIndex]) * fraction;
+  return Math.abs(quantile);
 }
 
 export function calculatePortfolioVolatility(assets: AssetInput[], weights: number[]) {
@@ -91,127 +41,6 @@ export function calculatePortfolioVolatility(assets: AssetInput[], weights: numb
   return Math.sqrt(Math.max(variance, 0));
 }
 
-export function buildEfficientFrontier(assets: AssetInput[], currentWeights: number[]) {
-  const points: FrontierPoint[] = [];
-
-  for (let index = 0; index < 150; index += 1) {
-    const rawWeights = assets.map((_, assetIndex) => {
-      const base = Math.abs(Math.sin((index + 2) * (assetIndex + 1.7)));
-      const tilt = assetIndex === 3 ? 0.6 : 1;
-      return base * tilt + 0.08;
-    });
-    const total = rawWeights.reduce((sum, value) => sum + value, 0);
-    const weights = rawWeights.map((value) => value / total);
-    const metrics = calculatePortfolioMetrics(assets, weights);
-
-    points.push({
-      id: index,
-      risk: metrics.volatility,
-      return: metrics.expectedReturn,
-      sharpe: metrics.sharpeRatio,
-      weights,
-      kind: "simulation",
-    });
-  }
-
-  const currentMetrics = calculatePortfolioMetrics(assets, currentWeights);
-  const optimized = points.reduce((best, point) => (point.sharpe > best.sharpe ? point : best), points[0]);
-
-  return [
-    ...points,
-    {
-      id: 900,
-      risk: currentMetrics.volatility,
-      return: currentMetrics.expectedReturn,
-      sharpe: currentMetrics.sharpeRatio,
-      weights: currentWeights,
-      kind: "current" as const,
-    },
-    {
-      ...optimized,
-      id: 901,
-      kind: "optimized" as const,
-    },
-  ];
-}
-
-export function getOptimizedPoint(frontier: FrontierPoint[]) {
-  return frontier.find((point) => point.kind === "optimized") ?? frontier[0];
-}
-
-export function buildPerformanceSeries(
-  assets: AssetInput[],
-  currentWeights: number[],
-  optimizedWeights: number[],
-): PerformancePoint[] {
-  const assetSeries = assets.map((asset, assetIndex) => {
-    let value = 100;
-
-    return Array.from({ length: 24 }, (_, monthIndex) => {
-      const trend = asset.expectedReturn / 12;
-      const seasonal =
-        Math.sin((monthIndex + 1) * (assetIndex + 1) * 0.72) * asset.volatility * 0.08;
-      const shock = Math.cos((monthIndex + 2) * (assetIndex + 2) * 0.33) * asset.volatility * 0.04;
-      value *= 1 + trend + seasonal + shock;
-      return value;
-    });
-  });
-
-  return Array.from({ length: 24 }, (_, monthIndex) => {
-    const row: PerformancePoint = {
-      month: `${monthLabels[monthIndex % 12]} ${monthIndex < 12 ? "25" : "26"}`,
-      portfolio: 0,
-      optimized: 0,
-    };
-
-    assets.forEach((asset, assetIndex) => {
-      const value = assetSeries[assetIndex][monthIndex];
-      row[asset.ticker] = Number(value.toFixed(1));
-      row.portfolio += currentWeights[assetIndex] * value;
-      row.optimized += optimizedWeights[assetIndex] * value;
-    });
-
-    row.portfolio = Number(row.portfolio.toFixed(1));
-    row.optimized = Number(row.optimized.toFixed(1));
-    return row;
-  });
-}
-
-export function buildRecommendations(
-  assets: AssetInput[],
-  currentWeights: number[],
-  current: PortfolioMetrics,
-  optimized: FrontierPoint,
-) {
-  const dominantAssetIndex = currentWeights.reduce(
-    (maxIndex, weight, index) => (weight > currentWeights[maxIndex] ? index : maxIndex),
-    0,
-  );
-  const largestShiftIndex = optimized.weights.reduce(
-    (maxIndex, weight, index) =>
-      Math.abs(weight - currentWeights[index]) > Math.abs(optimized.weights[maxIndex] - currentWeights[maxIndex])
-        ? index
-        : maxIndex,
-    0,
-  );
-  const sharpeDelta = optimized.sharpe - current.sharpeRatio;
-  const riskDelta = optimized.risk - current.volatility;
-
-  return [
-    `Die Analyse legt nahe, das Gewicht von ${assets[dominantAssetIndex].ticker} kritisch zu pruefen, weil diese Position mit ${formatPercent(
-      currentWeights[dominantAssetIndex],
-    )} den staerksten Einfluss auf dein Portfolio hat.`,
-    `Eine moegliche Portfolioverbesserung waere, ${assets[largestShiftIndex].ticker} von ${formatPercent(
-      currentWeights[largestShiftIndex],
-    )} auf ${formatPercent(optimized.weights[largestShiftIndex])} umzugewichten, um das Rendite-Risiko-Verhaeltnis breiter aufzustellen.`,
-    `Diese Anpassung wirkt aus der historischen Analyse plausibel, weil sich die Sharpe Ratio um ${sharpeDelta.toFixed(
-      2,
-    )} Punkte veraendert und das Risiko um ${formatPercent(Math.abs(riskDelta))} ${
-      riskDelta <= 0 ? "sinkt" : "steigt"
-    }.`,
-  ];
-}
-
 export function formatPercent(value: number) {
   return new Intl.NumberFormat("de-DE", {
     style: "percent",
@@ -220,7 +49,22 @@ export function formatPercent(value: number) {
   }).format(value);
 }
 
-function calculateDiversificationScore(weights: number[]) {
+export function calculateEffectiveHoldings(weights: number[]) {
   const herfindahl = weights.reduce((sum, weight) => sum + weight * weight, 0);
-  return Math.max(0, Math.min(100, (1 - herfindahl) * 140));
+  return herfindahl > 0 ? Number((1 / herfindahl).toFixed(1)) : 0;
+}
+
+export function calculateDiversificationScore(weights: number[]) {
+  if (weights.length <= 1) {
+    return 0;
+  }
+  const herfindahl = weights.reduce((sum, weight) => sum + weight * weight, 0);
+  const effectiveHoldings = herfindahl > 0 ? 1 / herfindahl : 0;
+  return Math.max(0, Math.min(100, ((effectiveHoldings - 1) / (weights.length - 1)) * 100));
+}
+
+export function calculateDiversificationRatio(assets: AssetInput[], weights: number[]) {
+  const numerator = assets.reduce((sum, asset, index) => sum + (weights[index] ?? 0) * asset.volatility, 0);
+  const volatility = calculatePortfolioVolatility(assets, weights);
+  return volatility > 0 ? numerator / volatility : 0;
 }

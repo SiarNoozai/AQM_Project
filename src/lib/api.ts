@@ -14,6 +14,7 @@ export type ApiAsset = {
   expectedReturn: number;
   volatility: number;
   lastPrice: number;
+  annualizedReturnGeometric: number;
 };
 
 export type ApiRiskFinding = {
@@ -28,6 +29,18 @@ export type ApiMetrics = {
   sharpeRatio: number;
   valueAtRisk: number;
   diversificationScore: number;
+  effectiveHoldings: number;
+  diversificationRatio: number;
+  valueAtRiskHorizonDays: number;
+  valueAtRiskMethod: "historisch";
+  annualizedReturnGeometric: number;
+};
+
+export type ApiOptimizationSettings = {
+  objective: string;
+  maxWeight: number;
+  shrinkageIntensity: number;
+  converged: boolean;
 };
 
 export type ApiSectorAllocation = {
@@ -57,7 +70,7 @@ export type ApiAnalysis = {
   };
   covarianceMatrix: number[][];
   performance: Array<Record<string, number | string>>;
-  frontier: Array<Record<string, number | string | number[]>>;
+  optimizationSettings: ApiOptimizationSettings;
   recommendations: string[];
   recommendationSource: "rules";
   disclaimer: string;
@@ -117,6 +130,14 @@ export type RecommendationResult = {
   source: "lmstudio" | "ollama" | "cloud" | "rules";
   model: string;
   disclaimer: string;
+  optimizationBasis: {
+    objective: string;
+    maxWeight: number;
+    description: string;
+  };
+  fallbackReason: string | null;
+  attemptedBackends: string[];
+  newsAvailable: boolean;
 };
 
 export type RecommendPayload = {
@@ -140,7 +161,8 @@ export type SecuritySearchResponse = {
   results: SecuritySearchResult[];
 };
 
-export type ExportFormat = "csv" | "pdf";
+export type { ExportFormat } from "./exportClient";
+export { exportPortfolioReport } from "./exportClient";
 
 export type LlmModelVerdict = {
   name: string;
@@ -174,7 +196,7 @@ export type LlmCheckResponse = {
 };
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "";
-const REQUEST_TIMEOUT_MS = 10000;
+const REQUEST_TIMEOUT_MS = 30000;
 // Lokale LLM-Generierung (z. B. 8B-Modell in LM Studio) kann mehrere Minuten dauern.
 const RECOMMEND_TIMEOUT_MS = 180000;
 const SEARCH_TIMEOUT_MS = 2500;
@@ -197,30 +219,6 @@ export async function searchSecurities(query: string, limit = 8) {
     limit: String(limit),
   });
   return getJson<SecuritySearchResponse>(`/api/securities/search?${params.toString()}`, SEARCH_TIMEOUT_MS);
-}
-
-export async function exportPortfolioReport(
-  format: ExportFormat,
-  analysis: ApiAnalysis,
-  recommendations?: string[],
-) {
-  const response = await request(
-    `${API_BASE_URL}/api/export/${format}`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ analysis, recommendations }),
-    },
-    REQUEST_TIMEOUT_MS,
-  );
-
-  if (!response.ok) {
-    throw new Error(await readApiError(response));
-  }
-
-  return response.blob();
 }
 
 async function postJson<T>(path: string, payload: unknown, timeoutMs: number): Promise<T> {

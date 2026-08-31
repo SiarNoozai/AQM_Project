@@ -118,8 +118,8 @@ ensure_port_is_free 5173 "Frontend"
 
 echo "[start] Backend auf http://127.0.0.1:8000"
 (
-  cd "${BACKEND_DIR}"
-  exec "${BACKEND_PYTHON}" -m uvicorn main:app --reload --host 127.0.0.1 --port 8000
+  cd "${ROOT_DIR}"
+  exec "${BACKEND_PYTHON}" -m uvicorn backend.main:app --reload --reload-dir "${BACKEND_DIR}" --host 127.0.0.1 --port 8000
 ) &
 BACKEND_PID=$!
 

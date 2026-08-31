@@ -1,33 +1,43 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from typing import Any
 
 import httpx
+import numpy as np
 
-try:
-    from .analysis import DISCLAIMER
-    from .market_intelligence import fetch_news_signals
-    from .models import GoalPreset, InvestorProfile, RecommendRequest, RecommendResponse
-except ImportError:
-    from analysis import DISCLAIMER
-    from market_intelligence import fetch_news_signals
-    from models import GoalPreset, InvestorProfile, RecommendRequest, RecommendResponse
+from .analysis import DISCLAIMER, optimize_portfolio
+from .market_intelligence import fetch_news_signals, is_news_configured
+from .models import GoalPreset, InvestorProfile, RecommendRequest, RecommendResponse
+
+
+logger = logging.getLogger(__name__)
 
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1")
 LMSTUDIO_MODEL = os.getenv("LMSTUDIO_MODEL", "")
 LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "90"))
-CLOUD_API_KEY = os.getenv("OPENAI_API_KEY", "")
-CLOUD_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com").rstrip("/")
-CLOUD_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+# CLOUD_* is provider-neutral. The OPENAI_* names remain supported for existing setups.
+_legacy_cloud_key = os.getenv("OPENAI_API_KEY", "")
+CLOUD_API_KEY = os.getenv("CLOUD_API_KEY") or _legacy_cloud_key
+CLOUD_BASE_URL = (
+    os.getenv("CLOUD_BASE_URL")
+    or (os.getenv("OPENAI_BASE_URL") if _legacy_cloud_key else None)
+    or "https://integrate.api.nvidia.com"
+).rstrip("/")
+CLOUD_MODEL = (
+    os.getenv("CLOUD_MODEL")
+    or (os.getenv("OPENAI_MODEL") if _legacy_cloud_key else None)
+    or "nvidia/nemotron-3-nano-30b-a3b"
+)
 CLOUD_TIMEOUT = float(os.getenv("CLOUD_TIMEOUT", "45"))
 
 
 def lmstudio_candidate_urls() -> list[str]:
-    """Moegliche LM-Studio-Adressen: .env zuerst, dann Standard-Ports."""
+    """Mögliche LM-Studio-Adressen: .env zuerst, dann Standard-Ports."""
     candidates: list[str] = []
     for raw in (os.getenv("LMSTUDIO_URL", ""), os.getenv("LMSTUDIO_URLS", "")):
         for item in raw.split(","):
@@ -56,6 +66,13 @@ GOAL_LABELS: dict[GoalPreset, str] = {
     "keep_tech_focus": "Tech-Fokus bewusst beibehalten",
     "defensive": "defensiver aufstellen",
     "balanced": "Rendite-Risiko ausbalancieren",
+}
+
+GOAL_OPTIMIZATION: dict[GoalPreset, dict[str, object]] = {
+    "diversify_broadly": {"objective": "max_diversification", "max_weight": 0.20},
+    "keep_tech_focus": {"objective": "max_sharpe", "max_weight": 0.40},
+    "defensive": {"objective": "min_volatility", "max_weight": 0.25},
+    "balanced": {"objective": "max_sharpe", "max_weight": 0.30},
 }
 
 SECTOR_IDEA_CATALOG: dict[str, list[dict[str, str]]] = {
@@ -106,8 +123,8 @@ SECTOR_IDEA_CATALOG: dict[str, list[dict[str, str]]] = {
 async def generate_recommendations(request: RecommendRequest) -> RecommendResponse:
     """Provider-Auswahl durch den Nutzer:
 
-    - "local":  LM Studio -> Ollama -> regelbasierter Fallback (privat, nichts verlaesst den Rechner)
-    - "cloud":  OpenAI-kompatible Cloud-API -> regelbasierter Fallback (z. B. fuer iPad/schwache Hardware)
+    - "local":  LM Studio -> Ollama -> regelbasierter Fallback (privat, nichts verlässt den Rechner)
+    - "cloud":  OpenAI-kompatible Cloud-API -> regelbasierter Fallback (z. B. für iPad/schwache Hardware)
     - "auto":   erst lokal, dann Cloud, dann Fallback
     """
     preference = request.llm_preference
@@ -115,67 +132,110 @@ async def generate_recommendations(request: RecommendRequest) -> RecommendRespon
     fallback = await build_rule_recommendation_response(request, fallback_model)
     prompt = _build_prompt(request, fallback, detail="small")
     cloud_prompt = _build_prompt(request, fallback, detail="large")
+    attempted_backends: list[str] = []
+    fallback_reason = "no_backend_reachable"
 
     if preference in ("auto", "local"):
-        lmstudio_result = await _call_lmstudio(prompt, request.model)
+        attempted_backends.append("LM Studio")
+        lmstudio_result, lmstudio_status = await _call_lmstudio_with_status(prompt, request.model)
         if lmstudio_result is not None:
             text, model_used = lmstudio_result
             validated = _validate_llm_response(text, "lmstudio", model_used, fallback)
             if validated is not None:
                 return validated
+            fallback_reason = "invalid_response" if _parse_recommendation_payload(text) is None else "validation_failed"
+        elif lmstudio_status in {"timeout", "invalid_response"}:
+            fallback_reason = lmstudio_status
 
         ollama_model = request.model or OLLAMA_MODEL
-        ollama_text = await _call_ollama(prompt, ollama_model)
+        attempted_backends.append("Ollama")
+        ollama_text, ollama_status = await _call_ollama_with_status(prompt, ollama_model)
         if ollama_text is not None:
             validated = _validate_llm_response(ollama_text, "ollama", ollama_model, fallback)
             if validated is not None:
                 return validated
+            fallback_reason = "invalid_response" if _parse_recommendation_payload(ollama_text) is None else "validation_failed"
+        elif ollama_status in {"timeout", "invalid_response"}:
+            fallback_reason = ollama_status
 
     if preference in ("auto", "cloud"):
-        cloud_result = await _call_cloud(cloud_prompt, request.model)
+        attempted_backends.append("Cloud-API")
+        cloud_result, cloud_status = await _call_cloud_with_status(cloud_prompt, request.model)
         if cloud_result is not None:
             text, model_used = cloud_result
             validated = _validate_llm_response(text, "cloud", model_used, fallback)
             if validated is not None:
                 return validated
+            fallback_reason = "invalid_response" if _parse_recommendation_payload(text) is None else "validation_failed"
+        elif cloud_status in {"timeout", "invalid_response"}:
+            fallback_reason = cloud_status
 
-    return fallback
+    return fallback.model_copy(
+        update={
+            "fallback_reason": fallback_reason,
+            "attempted_backends": attempted_backends,
+        }
+    )
 
 
 async def _call_cloud(prompt: str, requested_model: str | None) -> tuple[str, str] | None:
-    """OpenAI-kompatible Cloud-API. Benoetigt OPENAI_API_KEY in der .env."""
+    result, _ = await _call_cloud_with_status(prompt, requested_model)
+    return result
+
+
+async def _call_cloud_with_status(prompt: str, requested_model: str | None) -> tuple[tuple[str, str] | None, str]:
+    """OpenAI-kompatible Cloud-API mit maschinenlesbarem Fehlerstatus."""
     if not CLOUD_API_KEY:
-        return None
+        return None, "not_configured"
     model_name = requested_model or CLOUD_MODEL
     try:
         async with httpx.AsyncClient(timeout=CLOUD_TIMEOUT) as client:
+            request_body = {
+                "model": model_name,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": (
+                            "Du bist die Interpretationsebene eines Portfolio-Analyse-Tools. "
+                            "Antworte ausschließlich mit einem gültigen JSON-Objekt, ohne Markdown."
+                        ),
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                "temperature": 0.2,
+                "max_tokens": 700,
+            }
+            if model_name == "moonshotai/kimi-k3":
+                # Kimi K3 defaults to max reasoning, which can exceed the cloud timeout
+                # for this compact JSON interpretation task.
+                request_body["reasoning_effort"] = "low"
+                request_body["max_tokens"] = 420
+            elif model_name == "nvidia/nemotron-3-nano-30b-a3b":
+                # Nemotron defaults to an internal reasoning trace; the app needs the
+                # final structured JSON directly for reliable validation.
+                request_body["chat_template_kwargs"] = {"enable_thinking": False}
             response = await client.post(
                 f"{CLOUD_BASE_URL}/v1/chat/completions",
                 headers={"Authorization": f"Bearer {CLOUD_API_KEY}"},
-                json={
-                    "model": model_name,
-                    "messages": [
-                        {
-                            "role": "system",
-                            "content": (
-                                "Du bist die Interpretationsebene eines Portfolio-Analyse-Tools. "
-                                "Antworte ausschliesslich mit einem gueltigen JSON-Objekt, ohne Markdown."
-                            ),
-                        },
-                        {"role": "user", "content": prompt},
-                    ],
-                    "temperature": 0.2,
-                    "max_tokens": 700,
-                },
+                json=request_body,
             )
             response.raise_for_status()
             choices = response.json().get("choices", [])
             if not choices:
-                return None
+                return None, "invalid_response"
             content = choices[0].get("message", {}).get("content", "")
-            return (content, model_name) if content else None
-    except Exception:
-        return None
+            return ((content, model_name), "ok") if content else (None, "invalid_response")
+    except httpx.TimeoutException:
+        return None, "timeout"
+    except httpx.HTTPStatusError as exc:
+        logger.warning("Cloud API rejected recommendation request with HTTP %s", exc.response.status_code)
+        return None, "unreachable"
+    except httpx.RequestError as exc:
+        logger.warning("Cloud API request failed: %s", type(exc).__name__)
+        return None, "unreachable"
+    except Exception as exc:
+        logger.exception("Cloud recommendation call failed: %s", type(exc).__name__)
+        return None, "unreachable"
 
 
 def _validate_llm_response(
@@ -187,7 +247,7 @@ def _validate_llm_response(
     """Uebernimmt nur die Textfelder der KI; strukturierte Listen bleiben regelbasiert.
 
     Das macht die Ausgabe robust gegen Halluzination kleiner Modelle: Zahlen,
-    Gewichtungsvorschlaege und Ideen stammen immer aus der Berechnung.
+    Gewichtungsvorschläge und Ideen stammen immer aus der Berechnung.
     """
     parsed = _parse_recommendation_payload(text)
     if not parsed:
@@ -223,14 +283,24 @@ def _validate_llm_response(
 
 
 async def _call_lmstudio(prompt: str, requested_model: str | None) -> tuple[str, str] | None:
+    result, _ = await _call_lmstudio_with_status(prompt, requested_model)
+    return result
+
+
+async def _call_lmstudio_with_status(prompt: str, requested_model: str | None) -> tuple[tuple[str, str] | None, str]:
     """OpenAI-kompatible LM Studio API. Probiert alle Kandidaten-URLs durch."""
+    statuses: list[str] = []
     async with httpx.AsyncClient(timeout=LLM_TIMEOUT, trust_env=False) as client:
         for base_url in lmstudio_candidate_urls():
             try:
                 models_response = await client.get(f"{base_url}/v1/models", timeout=2.5)
                 models_response.raise_for_status()
                 loaded = models_response.json().get("data", [])
+            except httpx.TimeoutException:
+                statuses.append("timeout")
+                continue
             except Exception:
+                statuses.append("unreachable")
                 continue
 
             model_name = requested_model or LMSTUDIO_MODEL
@@ -251,7 +321,7 @@ async def _call_lmstudio(prompt: str, requested_model: str | None) -> tuple[str,
                                 "role": "system",
                                 "content": (
                                     "Du bist die Interpretationsebene eines Portfolio-Analyse-Tools. "
-                                    "Antworte ausschliesslich mit einem gueltigen JSON-Objekt, ohne Markdown."
+                                    "Antworte ausschließlich mit einem gültigen JSON-Objekt, ohne Markdown."
                                 ),
                             },
                             {"role": "user", "content": prompt},
@@ -264,16 +334,27 @@ async def _call_lmstudio(prompt: str, requested_model: str | None) -> tuple[str,
                 response.raise_for_status()
                 choices = response.json().get("choices", [])
                 if not choices:
+                    statuses.append("invalid_response")
                     continue
                 content = choices[0].get("message", {}).get("content", "")
                 if content:
-                    return (content, model_name)
-            except Exception:
+                    return (content, model_name), "ok"
+                statuses.append("invalid_response")
+            except httpx.TimeoutException:
+                statuses.append("timeout")
                 continue
-    return None
+            except Exception:
+                statuses.append("unreachable")
+                continue
+    return None, _combined_provider_status(statuses)
 
 
 async def _call_ollama(prompt: str, model_name: str) -> str | None:
+    result, _ = await _call_ollama_with_status(prompt, model_name)
+    return result
+
+
+async def _call_ollama_with_status(prompt: str, model_name: str) -> tuple[str | None, str]:
     try:
         async with httpx.AsyncClient(timeout=LLM_TIMEOUT, trust_env=False) as client:
             response = await client.post(
@@ -287,9 +368,19 @@ async def _call_ollama(prompt: str, model_name: str) -> str | None:
             )
             response.raise_for_status()
             text = response.json().get("response", "")
-            return text or None
+            return (text, "ok") if text else (None, "invalid_response")
+    except httpx.TimeoutException:
+        return None, "timeout"
     except Exception:
-        return None
+        return None, "unreachable"
+
+
+def _combined_provider_status(statuses: list[str]) -> str:
+    if statuses and all(status == "timeout" for status in statuses):
+        return "timeout"
+    if "invalid_response" in statuses and not any(status == "ok" for status in statuses):
+        return "invalid_response"
+    return "unreachable"
 
 
 async def build_rule_recommendation_response(request: RecommendRequest, model_name: str) -> RecommendResponse:
@@ -300,14 +391,24 @@ async def build_rule_recommendation_response(request: RecommendRequest, model_na
     optimized_metrics = analysis.get("optimizedMetrics", metrics)
     optimized_weights = analysis.get("optimizedWeights", [asset.get("weight", 0) for asset in assets])
     findings = analysis.get("riskFindings", [])
-    news_signals = await fetch_news_signals([str(asset.get("ticker", "")) for asset in assets])
+    try:
+        news_signals = await fetch_news_signals([str(asset.get("ticker", "")) for asset in assets])
+    except Exception:
+        news_signals = []
+    profile_weights, optimization_basis = _profile_optimized_weights(request, assets, optimized_weights)
 
     profile_label = _profile_label(request.investor_profile)
     summary = _build_summary(assets, sector_allocation, findings, request.investor_profile, request.goal_preset)
     profile_fit = _build_profile_fit(metrics, sector_allocation, request.investor_profile)
     analysis_highlights = _build_analysis_highlights(metrics, findings, request.focus_areas)
     sector_insights = _build_sector_insights(sector_allocation, request.goal_preset)
-    weight_adjustments = _build_weight_adjustments(assets, optimized_weights, request.goal_preset, request.investor_profile)
+    weight_adjustments = _build_weight_adjustments(
+        assets,
+        profile_weights,
+        request.goal_preset,
+        request.investor_profile,
+        str(optimization_basis["objective"]),
+    )
     new_ideas = _build_new_ideas(assets, sector_allocation, request.goal_preset, request.investor_profile)
     review_candidates = _build_review_candidates(assets, optimized_weights, findings)
     action_items = _build_action_items(
@@ -332,7 +433,87 @@ async def build_rule_recommendation_response(request: RecommendRequest, model_na
         source="rules",
         model=model_name,
         disclaimer=DISCLAIMER,
+        optimizationBasis=optimization_basis,
+        newsAvailable=is_news_configured(),
     )
+
+
+def _optimization_inputs(analysis: dict[str, Any]) -> tuple[np.ndarray, np.ndarray, list[str]] | None:
+    """Liest Berechnungsdaten für die Optimierung, ohne sie in den LLM-Prompt zu geben."""
+    assets = [asset for asset in analysis.get("assets", []) if isinstance(asset, dict)]
+    tickers = [str(asset.get("ticker", "")).strip() for asset in assets]
+    if len(tickers) < 2 or any(not ticker for ticker in tickers):
+        return None
+
+    try:
+        mean_returns = np.asarray([float(asset["expectedReturn"]) for asset in assets], dtype=float)
+        covariance = np.asarray(analysis["covarianceMatrix"], dtype=float)
+    except (KeyError, TypeError, ValueError):
+        return None
+
+    if (
+        mean_returns.shape != (len(tickers),)
+        or covariance.shape != (len(tickers), len(tickers))
+        or not np.isfinite(mean_returns).all()
+        or not np.isfinite(covariance).all()
+        or np.any(np.diag(covariance) <= 0)
+    ):
+        return None
+    return mean_returns, (covariance + covariance.T) / 2, tickers
+
+
+def _profile_optimized_weights(
+    request: RecommendRequest,
+    assets: list[dict[str, Any]],
+    fallback_weights: list[float],
+) -> tuple[list[float], dict[str, Any]]:
+    config = GOAL_OPTIMIZATION[request.goal_preset]
+    objective = str(config["objective"])
+    if request.investor_profile.time_horizon == "short_term" and objective == "max_sharpe":
+        objective = "min_volatility"
+
+    base_max_weight = float(config["max_weight"])
+    risk_multiplier = {"defensive": 0.8, "balanced": 1.0, "aggressive": 1.3}[request.investor_profile.risk_style]
+    max_weight = min(0.5, base_max_weight * risk_multiplier)
+    asset_count = len(assets)
+    if asset_count:
+        max_weight = max(max_weight, 1 / asset_count)
+
+    inputs = _optimization_inputs(request.analysis)
+    fallback = [float(value) for value in fallback_weights]
+    if inputs is None:
+        return fallback, {
+            "objective": "fallback",
+            "maxWeight": round(max_weight, 4),
+            "description": "Die Analyse enthielt keine plausible Kovarianzmatrix; die vorhandene Vergleichsvariante bleibt aktiv.",
+        }
+
+    mean_returns, covariance, _ = inputs
+    try:
+        weights = optimize_portfolio(
+            mean_returns,
+            covariance,
+            float(request.analysis.get("riskFreeRate", 0.025)),
+            objective,
+            max_weight,
+        )
+    except (ValueError, TypeError, FloatingPointError):
+        return fallback, {
+            "objective": "fallback",
+            "maxWeight": round(max_weight, 4),
+            "description": "Die profilbezogene Optimierung konnte nicht berechnet werden; die vorhandene Vergleichsvariante bleibt aktiv.",
+        }
+
+    objective_labels = {
+        "max_sharpe": "historisches Max-Sharpe-Ziel",
+        "min_volatility": "historische Minimierung der Volatilität",
+        "max_diversification": "historische Maximierung des Diversifikationsquotienten",
+    }
+    return [float(value) for value in weights], {
+        "objective": objective,
+        "maxWeight": round(max_weight, 4),
+        "description": f"Profilbezogene Optimierung: {objective_labels[objective]}, maximal {max_weight * 100:.1f} Prozent je Position.",
+    }
 
 
 def _build_summary(
@@ -347,13 +528,13 @@ def _build_summary(
     top_ticker = next((str(asset.get("ticker")) for asset in assets if float(asset.get("weight", 0)) == top_weight), "das Portfolio")
     opening = (
         f"Dein Portfolio wird aktuell vor allem von {top_ticker} und der Zielsetzung "
-        f"'{GOAL_LABELS[goal_preset]}' gepraegt."
+        f"'{GOAL_LABELS[goal_preset]}' geprägt."
     )
 
     if top_sector and float(top_sector.get("weight", 0)) >= 0.55:
         return (
             f"{opening} Gleichzeitig liegt mit {top_sector.get('sector')} ein klarer Schwerpunkt bei "
-            f"{float(top_sector.get('weight', 0)) * 100:.1f} Prozent vor, was fuer ein { _profile_label(investor_profile) }es Profil genauer geprueft werden sollte."
+            f"{float(top_sector.get('weight', 0)) * 100:.1f} Prozent vor, was für ein { _profile_label(investor_profile) }es Profil genauer geprüft werden sollte."
         )
 
     dominant_finding = next((str(item.get("message")) for item in findings if item.get("type") == "concentration"), None)
@@ -374,21 +555,21 @@ def _build_profile_fit(metrics: dict[str, Any], sector_allocation: list[dict[str
     if investor_profile.risk_style == "defensive":
         if volatility >= 0.20 or top_sector_weight >= 0.45:
             return (
-                f"Du hast {profile_label} gewaehlt. Die aktuelle Mischung wirkt dafuer noch etwas konzentriert oder schwankungsstark "
+                f"Du hast {profile_label} gewählt. Die aktuelle Mischung wirkt dafür noch etwas konzentriert oder schwankungsstark "
                 "und sollte eher breiter verteilt werden."
             )
-        return f"Du hast {profile_label} gewaehlt. Die Struktur wirkt bereits vergleichsweise robust, kann aber noch breiter abgestimmt werden."
+        return f"Du hast {profile_label} gewählt. Die Struktur wirkt bereits vergleichsweise robust, kann aber noch breiter abgestimmt werden."
 
     if investor_profile.risk_style == "aggressive":
         if top_sector_weight >= 0.45:
             return (
-                f"Du hast {profile_label} gewaehlt. Ein Wachstumsschwerpunkt passt grundsaetzlich dazu, "
+                f"Du hast {profile_label} gewählt. Ein Wachstumsschwerpunkt passt grundsätzlich dazu, "
                 "trotzdem bleibt die Konzentration auf wenige Titel ein zentrales Risiko."
             )
-        return f"Du hast {profile_label} gewaehlt. Das Portfolio kann fuer diese Zielsetzung noch klarer auf Wachstumsschwerpunkte ausgerichtet werden."
+        return f"Du hast {profile_label} gewählt. Das Portfolio kann für diese Zielsetzung noch klarer auf Wachstumsschwerpunkte ausgerichtet werden."
 
     return (
-        f"Du hast {profile_label} gewaehlt. Die KI gewichtet deshalb sowohl Diversifikation als auch Rendite-Risiko-Balance gleichermassen."
+        f"Du hast {profile_label} gewählt. Die KI gewichtet deshalb sowohl Diversifikation als auch Rendite-Risiko-Balance gleichermaßen."
     )
 
 
@@ -400,7 +581,7 @@ def _build_analysis_highlights(
     highlights: list[str] = []
     if "summary" in focus_areas:
         highlights.append(
-            f"Die Kennzahlen zeigen aktuell {float(metrics.get('volatility', 0)) * 100:.1f} Prozent Volatilitaet bei einer Sharpe Ratio von {float(metrics.get('sharpeRatio', 0)):.2f}."
+            f"Die Kennzahlen zeigen aktuell {float(metrics.get('volatility', 0)) * 100:.1f} Prozent Volatilität bei einer Sharpe Ratio von {float(metrics.get('sharpeRatio', 0)):.2f}."
         )
     if "diversification" in focus_areas:
         highlights.append(
@@ -419,21 +600,21 @@ def _build_analysis_highlights(
 
 def _build_sector_insights(sector_allocation: list[dict[str, Any]], goal_preset: GoalPreset) -> list[str]:
     if not sector_allocation:
-        return ["Fuer die aktuelle Auswahl liegen noch keine belastbaren Brancheninformationen vor."]
+        return ["Für die aktuelle Auswahl liegen noch keine belastbaren Brancheninformationen vor."]
 
     insights = [
-        f"Die groesste Branchengewichtung liegt bei {sector_allocation[0].get('sector')} mit {float(sector_allocation[0].get('weight', 0)) * 100:.1f} Prozent."
+        f"Die größte Branchengewichtung liegt bei {sector_allocation[0].get('sector')} mit {float(sector_allocation[0].get('weight', 0)) * 100:.1f} Prozent."
     ]
     represented = [str(item.get("sector")) for item in sector_allocation]
     if len(represented) <= 3:
         insights.append("Es sind bisher nur wenige unterschiedliche Branchen sichtbar, was die Breite des Portfolios begrenzt.")
 
     if goal_preset == "keep_tech_focus":
-        insights.append("Fuer einen bewussten Tech-Fokus sollte die restliche Branchenverteilung trotzdem als Puffer gegen Einzelrisiken dienen.")
+        insights.append("Für einen bewussten Tech-Fokus sollte die restliche Branchenverteilung trotzdem als Puffer gegen Einzelrisiken dienen.")
     else:
         missing = _pick_target_sectors(sector_allocation, goal_preset, "defensive")[:2]
         if missing:
-            insights.append(f"Unterstuetzend waeren ergaenzende Gewichte in {', '.join(missing)}.")
+            insights.append(f"Unterstützend wären ergänzende Gewichte in {', '.join(missing)}.")
     return insights[:3]
 
 
@@ -442,6 +623,7 @@ def _build_weight_adjustments(
     optimized_weights: list[float],
     goal_preset: GoalPreset,
     investor_profile: InvestorProfile,
+    objective: str = "max_sharpe",
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for index, asset in enumerate(assets):
@@ -452,13 +634,17 @@ def _build_weight_adjustments(
             continue
 
         sector = str(asset.get("sector", "Unbekannt"))
-        reason = "Die Anpassung naehert sich der berechneten Vergleichsvariante an."
-        if delta < 0 and goal_preset != "keep_tech_focus":
+        reason = "Die Anpassung nähert sich der berechneten Vergleichsvariante an."
+        if objective == "min_volatility":
+            reason = "Diese Anpassung senkt die erwartete Schwankung des Gesamtportfolios."
+        elif objective == "max_diversification":
+            reason = "Diese Anpassung verbessert den berechneten Diversifikationsquotienten und die Streuung."
+        elif delta < 0 and goal_preset != "keep_tech_focus":
             reason = f"Eine geringere Gewichtung von {asset.get('ticker')} reduziert Konzentration in {sector}."
         elif delta > 0 and investor_profile.risk_style == "aggressive":
-            reason = f"Das hoehere Gewicht stuetzt einen chancenorientierteren Schwerpunkt in {sector}."
+            reason = f"Das höhere Gewicht stützt einen chancenorientierteren Schwerpunkt in {sector}."
         elif delta > 0:
-            reason = f"Das hoehere Gewicht stabilisiert die Verteilung innerhalb von {sector} gegenueber dem bisherigen Portfolio."
+            reason = f"Das höhere Gewicht stabilisiert die Verteilung innerhalb von {sector} gegenüber dem bisherigen Portfolio."
 
         rows.append(
             {
@@ -517,7 +703,7 @@ def _build_review_candidates(
             reviews.append(
                 {
                     "ticker": str(asset.get("ticker")),
-                    "reason": f"{asset.get('ticker')} praegt das Portfolio mit {current * 100:.1f} Prozent besonders stark und sollte im Kontext der neuen Zielsetzung geprueft werden.",
+                    "reason": f"{asset.get('ticker')} prägt das Portfolio mit {current * 100:.1f} Prozent besonders stark und sollte im Kontext der neuen Zielsetzung geprüft werden.",
                 }
             )
 
@@ -546,15 +732,15 @@ def _build_action_items(
     if weight_adjustments:
         top = weight_adjustments[0]
         items.append(
-            f"Pruefe zuerst die Umgewichtung von {top['ticker']} von {float(top['currentWeight']) * 100:.1f} auf {float(top['suggestedWeight']) * 100:.1f} Prozent."
+            f"Prüfe zuerst die Umgewichtung von {top['ticker']} von {float(top['currentWeight']) * 100:.1f} auf {float(top['suggestedWeight']) * 100:.1f} Prozent."
         )
     if new_ideas:
         ideas = ", ".join(idea["ticker"] for idea in new_ideas[:2])
-        items.append(f"Nutze {ideas} als Beispiel, um Branchenluecken gezielt in einer Folgeanalyse zu testen.")
+        items.append(f"Nutze {ideas} als Beispiel, um Branchenlücken gezielt in einer Folgeanalyse zu testen.")
     if goal_note:
-        items.append(f"Beruecksichtige deinen Zusatzhinweis: {goal_note.strip()}")
+        items.append(f"Berücksichtige deinen Zusatzhinweis: {goal_note.strip()}")
     elif news_signals:
-        items.append(f"Pruefe die aktuelle Nachrichtenlage rund um {news_signals[0]['ticker']} vor einer Aenderung besonders aufmerksam.")
+        items.append(f"Prüfe die aktuelle Nachrichtenlage rund um {news_signals[0]['ticker']} vor einer Aenderung besonders aufmerksam.")
     return items[:4]
 
 
@@ -580,12 +766,12 @@ def _pick_target_sectors(
 
 def _build_new_idea_reason(sector: str, goal_preset: GoalPreset, investor_profile: InvestorProfile) -> str:
     if goal_preset == "keep_tech_focus":
-        return f"Diese Idee kann den gewuenschten Fokus erhalten und gleichzeitig die Tech-Story breiter innerhalb von {sector} abstuetzen."
+        return f"Diese Idee kann den gewünschten Fokus erhalten und gleichzeitig die Tech-Story breiter innerhalb von {sector} abstützen."
     if investor_profile.risk_style == "defensive":
-        return f"Diese Idee kann die Branchenbreite in {sector} erhoehen und passt eher zu einem defensiveren Profil."
+        return f"Diese Idee kann die Branchenbreite in {sector} erhöhen und passt eher zu einem defensiveren Profil."
     if investor_profile.risk_style == "aggressive":
-        return f"Diese Idee ergaenzt {sector} als chancenorientierte Beispielposition fuer eine naechste Vergleichsanalyse."
-    return f"Diese Idee kann die Branchenabdeckung in {sector} fuer eine ausgewogenere Folgeanalyse erweitern."
+        return f"Diese Idee ergänzt {sector} als chancenorientierte Beispielposition für eine nächste Vergleichsanalyse."
+    return f"Diese Idee kann die Branchenabdeckung in {sector} für eine ausgewogenere Folgeanalyse erweitern."
 
 
 def _profile_label(investor_profile: InvestorProfile) -> str:
@@ -595,11 +781,11 @@ def _profile_label(investor_profile: InvestorProfile) -> str:
 def _compact_analysis(analysis: dict[str, Any], detail: str = "small") -> dict[str, Any]:
     """Reduziert die Analyse auf das, was die KI zum Formulieren braucht.
 
-    detail="small": fuer lokale Modelle mit 4k-8k Kontext (~1k Tokens).
-    detail="large": fuer Cloud-Modelle mit grossem Kontext - zusaetzlich volle
+    detail="small": für lokale Modelle mit 4k-8k Kontext (~1k Tokens).
+    detail="large": für Cloud-Modelle mit großem Kontext - zusätzlich volle
     Korrelationsmatrix, monatlich verdichtete Performance und Frontier-Eckpunkte.
-    Rohe Tageskurse bekommt kein Modell: sie verbessern die Erklaerung nicht,
-    kosten aber Tokens und erhoehen das Halluzinationsrisiko.
+    Rohe Tageskurse bekommt kein Modell: sie verbessern die Erklärung nicht,
+    kosten aber Tokens und erhöhen das Halluzinationsrisiko.
     """
     assets = [
         {
@@ -613,12 +799,22 @@ def _compact_analysis(analysis: dict[str, Any], detail: str = "small") -> dict[s
         for a in analysis.get("assets", [])
     ]
 
-    metrics_keys = ("expectedReturn", "volatility", "sharpeRatio", "valueAtRisk", "diversificationScore")
+    metrics_keys = (
+        "expectedReturn",
+        "volatility",
+        "sharpeRatio",
+        "valueAtRisk",
+        "diversificationScore",
+        "effectiveHoldings",
+        "diversificationRatio",
+        "valueAtRiskHorizonDays",
+        "annualizedReturnGeometric",
+    )
 
     def slim_metrics(source: dict[str, Any]) -> dict[str, Any]:
         return {k: round(float(source.get(k, 0)), 4) for k in metrics_keys}
 
-    # Nur die staerksten Korrelationen statt der ganzen Matrix
+    # Nur die stärksten Korrelationen statt der ganzen Matrix
     high_correlations: list[dict[str, Any]] = []
     matrix = analysis.get("correlationMatrix", {})
     tickers = matrix.get("tickers", [])
@@ -651,27 +847,6 @@ def _compact_analysis(analysis: dict[str, Any], detail: str = "small") -> dict[s
         "hoheKorrelationen": high_correlations[:4],
     }
 
-    if detail == "large":
-        compact["korrelationsmatrix"] = {
-            "tickers": tickers,
-            "values": [[round(float(v), 2) for v in row] for row in values],
-        }
-        # Performance monatlich verdichten statt taeglich
-        performance = analysis.get("performance", [])
-        if performance:
-            step = max(1, len(performance) // 24)
-            compact["performanceVerlauf"] = [
-                {k: (round(float(v), 2) if isinstance(v, (int, float)) else v) for k, v in point.items()}
-                for point in performance[::step]
-            ][:24]
-        frontier = analysis.get("frontier", [])
-        marked = [f for f in frontier if f.get("kind") in ("current", "optimized")]
-        if marked:
-            compact["frontierPunkte"] = [
-                {"kind": f.get("kind"), "risk": round(float(f.get("risk", 0)), 4), "return": round(float(f.get("return", 0)), 4)}
-                for f in marked
-            ]
-
     return compact
 
 
@@ -688,22 +863,22 @@ def _build_prompt(request: RecommendRequest, fallback: RecommendResponse, detail
         "sectorInsights": fallback.sector_insights,
         "actionItems": fallback.action_items,
     }
-    return f"""Du erklaerst Privatanlegern die Ergebnisse einer regelbasierten Portfolioanalyse.
+    return f"""Du erklärst Privatanlegern die Ergebnisse einer regelbasierten Portfolioanalyse.
 Du gibst keine Anlageberatung, keine Kauf-/Verkaufssignale, keine Prognosen.
-Nutze ausschliesslich die folgenden berechneten Werte. Erfinde keine Zahlen.
+Nutze ausschließlich die folgenden berechneten Werte. Erfinde keine Zahlen.
 
 Nutzerprofil: {TIME_HORIZON_LABELS[request.investor_profile.time_horizon]}, {RISK_STYLE_LABELS[request.investor_profile.risk_style]}, Ziel: {GOAL_LABELS[request.goal_preset]}.
 Zusatzhinweis: {request.goal_note or "keiner"}
 
-Berechnete Analyse (Gewichte/Renditen/Volatilitaet als Dezimalzahlen):
+Berechnete Analyse (Gewichte/Renditen/Volatilität als Dezimalzahlen):
 {json.dumps(compact, ensure_ascii=False)}
 
-Vorformulierter Entwurf (verbessere Klarheit und Verstaendlichkeit, bleibe inhaltlich treu):
+Vorformulierter Entwurf (verbessere Klarheit und Verständlichkeit, bleibe inhaltlich treu):
 {json.dumps(draft, ensure_ascii=False)}
 
 Antworte NUR mit einem JSON-Objekt mit exakt diesen Feldern:
 {{"summary": string, "profileFit": string, "analysisHighlights": string[], "sectorInsights": string[], "actionItems": string[]}}
-Regeln: kein Markdown, keine weiteren Felder, Deutsch, jede Aussage muss sich auf eine der obigen Zahlen stuetzen, maximal 4 Eintraege pro Liste.""".strip()
+Regeln: kein Markdown, keine weiteren Felder, Deutsch, jede Aussage muss sich auf eine der obigen Zahlen stützen, maximal 4 Einträge pro Liste.""".strip()
 
 
 def _parse_recommendation_payload(text: str) -> dict[str, Any] | None:
